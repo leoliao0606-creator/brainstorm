@@ -1,16 +1,30 @@
-# React + Vite
+# Brainstorm Studio
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+一个适合工作坊、需求讨论和创意会的头脑风暴板。现在这不是 Vite 默认模板，而是一页可直接使用的 React 应用。
 
-Currently, two official plugins are available:
+## 功能
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- 本地自动保存到 `localStorage`
+- 跨浏览器标签页同步同一块工作板
+- 手动录入卡片，支持标签、编辑、投票、置顶、归档、删除
+- 内置「题卡 + 灵感引擎」，可围绕当前主题快速补 5 张热身卡
+- 按作用域、标签、关键词筛选，支持按最近更新时间、票数、标签排序
+- 导出 / 导入 JSON，方便在会前准备和不同设备之间搬运
 
-## React Compiler
+## 开发
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```bash
+npm install
+npm run dev
+```
 
-## Expanding the ESLint configuration
+## 验证
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```bash
+npm run lint
+npm run build
+```
+
+## 数据格式
+
+工作板会自动保存到浏览器本地，键名为 `brainstorm:studio:v2`。导出的 JSON 也沿用同一结构，便于再次导入或做二次处理。

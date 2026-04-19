@@ -1,977 +1,950 @@
-import { useState, useEffect, useRef } from 'react';
 import {
-  Plus, Sparkles, Dices, Heart, Trash2, RefreshCw, X, Users,
-  Send, Grid3x3, GitBranch, Archive, ArchiveRestore, Tag as TagIcon,
-  Pencil, Check
+  startTransition,
+  useDeferredValue,
+  useEffect,
+  useEffectEvent,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  Archive,
+  ArchiveRestore,
+  Check,
+  Download,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  Trash2,
+  Upload,
+  Users,
+  Vote,
+  WandSparkles,
+  X,
 } from 'lucide-react';
+import './App.css';
 
-// ============================================================
-// 便签配色 (糖果色系)
-// ============================================================
-const NOTE_COLORS = [
-  { bg: '#FFE864', tape: '#F5C518', name: '阳光' },
-  { bg: '#FFB8D9', tape: '#F58AB4', name: '泡泡糖' },
-  { bg: '#B8F5D0', tape: '#7FD9A0', name: '薄荷' },
-  { bg: '#A8D9FF', tape: '#6FB8F0', name: '晴空' },
-  { bg: '#FFCDA8', tape: '#F0A06F', name: '蜜桃' },
-  { bg: '#D9B8FF', tape: '#B088F0', name: '熏衣草' },
+const STORAGE_KEY = 'brainstorm:studio:v2';
+const DEFAULT_TITLE = '新产品头脑风暴';
+const DEFAULT_OWNER = '主持人';
+const TAG_SUGGESTIONS = ['产品', '增长', '体验', '技术', '运营', '商业'];
+const CLOCK_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
+  hour: '2-digit',
+  minute: '2-digit',
+});
+const NOTE_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
+  month: 'numeric',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+
+const PROMPT_DECK = [
+  {
+    id: 'first-minute',
+    kicker: '砍摩擦',
+    title: '把第一分钟变轻',
+    prompt: '如果用户只给你 60 秒，你会删掉哪个步骤，才能更快进入价值时刻？',
+    tag: '体验',
+  },
+  {
+    id: 'show-value',
+    kicker: '放大价值',
+    title: '让卖点先开口',
+    prompt: '哪一个结果最值得在前三屏先展示，而不是等用户自己摸索？',
+    tag: '商业',
+  },
+  {
+    id: 'opposite-play',
+    kicker: '反着来',
+    title: '掀翻行业默认',
+    prompt: '如果你故意跟行业里的标准流程反着做，会得到什么更鲜明的体验？',
+    tag: '策略',
+  },
+  {
+    id: 'human-touch',
+    kicker: '更像人',
+    title: '让流程有温度',
+    prompt: '哪一步最适合从冷冰冰的自动化，改成能被用户记住的人味动作？',
+    tag: '服务',
+  },
+  {
+    id: 'tiny-bet',
+    kicker: '小赌注',
+    title: '先做最小验证',
+    prompt: '这个方向本周能用什么极简原型试一下，而不是先做满配版本？',
+    tag: '实验',
+  },
 ];
 
-const RANDOM_PROMPTS = [
-  '如果预算翻 10 倍,你会怎么做?',
-  '如果只能用一句话解释它,你会说什么?',
-  '10 岁的小孩会怎么理解这个问题?',
-  '如果必须在明天完成,你会砍掉什么?',
-  '最糟糕的解决方案是什么?(然后反过来想)',
-  '如果这是一个实体产品,它会是什么样?',
-  '用户最不愿意承认的痛点是什么?',
-  '如果我们是行业里的反派,会怎么做?',
-  '把两个不相关的东西组合在一起试试',
-  '如果没有互联网,这件事会怎么做?',
-  '最奢侈的版本长什么样?',
-  '哪些假设我们从来没有质疑过?',
-  '如果必须免费,怎么赚钱?',
-  '如果必须收 10 倍的价格,怎么证明值?',
-  '100 年后的人会怎么看这个?',
-  '如果要拍成电影,主角是谁?',
-  '哪个环节最无聊?能不能变好玩?',
-  '如果删掉 80% 的功能,留下哪 20%?',
-];
+const IDEA_BLOCKS = {
+  leadIns: ['试着让', '把', '围绕', '为'],
+  audiences: ['第一次接触的用户', '已经感兴趣却没转化的人', '高价值客户', '最容易流失的用户', '内部运营团队'],
+  moves: ['压缩成 30 秒体验', '改成一句承诺就能说清的方案', '拆成可以分享的小片段', '做成无需下载的试点', '变成高频可回流的触点'],
+  constraints: ['先不用新增研发投入', '只改文案与节奏', '先用人工兜底', '两天内能上线', '只服务一个细分场景'],
+  proofs: ['转化率', '完成率', '复访率', '用户主动提及率', '口碑反馈'],
+  outputs: ['一张落地页草图', '一段上手引导', '一个 concierge 流程', '一组对比卡片', '一个候补名单实验'],
+};
 
-const STORAGE_KEY = 'brainstorm:board-v1';
-
-// ============================================================
-// 字体注入
-// ============================================================
-function useGoogleFonts() {
-  useEffect(() => {
-    if (document.getElementById('bs-fonts')) return;
-    const link = document.createElement('link');
-    link.id = 'bs-fonts';
-    link.rel = 'stylesheet';
-    link.href =
-      'https://fonts.googleapis.com/css2?family=Caveat:wght@400;600;700&family=Kalam:wght@300;400;700&family=Gaegu:wght@400;700&family=Shadows+Into+Light&display=swap';
-    document.head.appendChild(link);
-  }, []);
+function hashString(value = '') {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
 }
 
-// ============================================================
-// 手绘 SVG 滤镜 (全局只注入一次)
-// ============================================================
-function SketchFilters() {
-  return (
-    <svg width="0" height="0" style={{ position: 'absolute' }}>
-      <defs>
-        <filter id="roughen">
-          <feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="2" seed="1" />
-          <feDisplacementMap in="SourceGraphic" scale="2" />
-        </filter>
-        <filter id="paper">
-          <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" result="noise" />
-          <feColorMatrix
-            in="noise"
-            values="0 0 0 0 0.3  0 0 0 0 0.2  0 0 0 0 0.1  0 0 0 0.12 0"
-          />
-        </filter>
-      </defs>
-    </svg>
-  );
+function pickFrom(list, key) {
+  return list[hashString(key) % list.length];
 }
 
-// ============================================================
-// 工具函数
-// ============================================================
-const rid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-const pickColor = () => NOTE_COLORS[Math.floor(Math.random() * NOTE_COLORS.length)];
+function createId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
-// ============================================================
-// 主组件
-// ============================================================
-export default function BrainstormBoard() {
-  useGoogleFonts();
-
-  const [userName, setUserName] = useState('');
-  const [nameInput, setNameInput] = useState('');
-  const [editingName, setEditingName] = useState(false);
-
-  const [notes, setNotes] = useState([]);
-  const [topic, setTopic] = useState('我们的头脑风暴');
-  const [editingTopic, setEditingTopic] = useState(false);
-
-  const [view, setView] = useState('wall'); // wall | mindmap | archive
-  const [filterTag, setFilterTag] = useState(null);
-  const [sortBy, setSortBy] = useState('recent'); // recent | votes | random
-
-  const [draft, setDraft] = useState({ text: '', tag: '' });
-  const [showDraft, setShowDraft] = useState(false);
-
-  const [aiOpen, setAiOpen] = useState(false);
-  const [aiTopic, setAiTopic] = useState('');
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState(null);
-
-  const [currentPrompt, setCurrentPrompt] = useState(null);
-  const [loaded, setLoaded] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-
-  // ----------------------------------------------------------
-  // 持久化加载 & 轮询同步
-  // ----------------------------------------------------------
-  const notesRef = useRef(notes);
-  notesRef.current = notes;
-  const topicRef = useRef(topic);
-  topicRef.current = topic;
-
-  const loadFromStorage = async () => {
-    try {
-      const res = await window.storage.get(STORAGE_KEY, true);
-      if (res && res.value) {
-        const data = JSON.parse(res.value);
-        if (Array.isArray(data.notes)) setNotes(data.notes);
-        if (data.topic) setTopic(data.topic);
-      }
-    } catch (e) {
-      // 第一次使用,无数据
-    }
-    setLoaded(true);
+function createNote({ text, tag = '', author = DEFAULT_OWNER, pinned = false }) {
+  const stamp = Date.now();
+  return {
+    id: createId(),
+    text: text.trim(),
+    tag: tag.trim(),
+    author: author.trim() || DEFAULT_OWNER,
+    votes: 0,
+    archived: false,
+    pinned,
+    createdAt: stamp,
+    updatedAt: stamp,
   };
+}
 
-  useEffect(() => {
-    loadFromStorage();
-    const iv = setInterval(loadFromStorage, 5000);
-    return () => clearInterval(iv);
-  }, []);
+function touchBoard(board) {
+  return {
+    ...board,
+    updatedAt: Date.now(),
+  };
+}
 
-  // 初始化用户名(随机访客名,用户可点击修改)
-  useEffect(() => {
-    if (!userName) {
-      const n = `访客${Math.floor(Math.random() * 900) + 100}`;
-      setUserName(n);
-      setNameInput(n);
+function appendNotes(board, notes) {
+  return touchBoard({
+    ...board,
+    notes: [...notes, ...board.notes],
+  });
+}
+
+function patchNote(board, noteId, updater) {
+  const stamp = Date.now();
+  return touchBoard({
+    ...board,
+    notes: board.notes.map((note) =>
+      note.id === noteId ? { ...note, ...updater(note), updatedAt: stamp } : note
+    ),
+  });
+}
+
+function deleteNote(board, noteId) {
+  return touchBoard({
+    ...board,
+    notes: board.notes.filter((note) => note.id !== noteId),
+  });
+}
+
+function normalizeText(value, fallback = '') {
+  return typeof value === 'string' ? value : fallback;
+}
+
+function normalizeTimestamp(value, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeNote(rawNote, index) {
+  const text = normalizeText(rawNote?.text).trim();
+  if (!text) return null;
+
+  const createdAt = normalizeTimestamp(rawNote?.createdAt, index);
+  const updatedAt = normalizeTimestamp(rawNote?.updatedAt, createdAt);
+
+  return {
+    id: normalizeText(rawNote?.id, `legacy-${index}`),
+    text,
+    tag: normalizeText(rawNote?.tag ?? rawNote?.tags?.[0]).trim(),
+    author: normalizeText(rawNote?.author ?? rawNote?.userName, DEFAULT_OWNER).trim() || DEFAULT_OWNER,
+    votes: normalizeTimestamp(rawNote?.votes, 0),
+    archived: Boolean(rawNote?.archived),
+    pinned: Boolean(rawNote?.pinned),
+    createdAt,
+    updatedAt,
+  };
+}
+
+function normalizeBoard(rawBoard) {
+  const notes = Array.isArray(rawBoard?.notes)
+    ? rawBoard.notes.map(normalizeNote).filter(Boolean)
+    : [];
+
+  return {
+    version: 2,
+    title: normalizeText(rawBoard?.title, DEFAULT_TITLE).trim() || DEFAULT_TITLE,
+    owner: normalizeText(rawBoard?.owner ?? rawBoard?.userName, DEFAULT_OWNER).trim() || DEFAULT_OWNER,
+    notes,
+    updatedAt: normalizeTimestamp(
+      rawBoard?.updatedAt,
+      notes.reduce(
+        (latest, note) => Math.max(latest, note.updatedAt, note.createdAt),
+        0
+      )
+    ),
+  };
+}
+
+function createInitialBoard() {
+  return touchBoard({
+    version: 2,
+    title: DEFAULT_TITLE,
+    owner: DEFAULT_OWNER,
+    notes: [],
+  });
+}
+
+function loadBoard() {
+  if (typeof window === 'undefined') {
+    return createInitialBoard();
+  }
+
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return createInitialBoard();
+    return normalizeBoard(JSON.parse(raw));
+  } catch {
+    return createInitialBoard();
+  }
+}
+
+function persistBoard(serializedBoard) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(STORAGE_KEY, serializedBoard);
+}
+
+function formatClock(timestamp) {
+  if (!timestamp) return '刚创建';
+  return CLOCK_FORMATTER.format(new Date(timestamp));
+}
+
+function formatNoteTime(timestamp) {
+  if (!timestamp) return '未记录时间';
+  return NOTE_FORMATTER.format(new Date(timestamp));
+}
+
+function createIdeaBurst(topic, promptCard, count, offset) {
+  const focus = topic.trim() || DEFAULT_TITLE;
+  const ideas = [];
+  let cursor = 0;
+
+  while (ideas.length < count && cursor < count * 4) {
+    const key = `${focus}:${promptCard.id}:${offset}:${cursor}`;
+    const sentence = `${pickFrom(IDEA_BLOCKS.leadIns, `${key}:lead`)}${focus}面向${pickFrom(
+      IDEA_BLOCKS.audiences,
+      `${key}:aud`
+    )}${pickFrom(IDEA_BLOCKS.moves, `${key}:move`)}，${pickFrom(
+      IDEA_BLOCKS.constraints,
+      `${key}:constraint`
+    )}，并用${pickFrom(IDEA_BLOCKS.proofs, `${key}:proof`)}验证${pickFrom(
+      IDEA_BLOCKS.outputs,
+      `${key}:output`
+    )}`;
+
+    if (!ideas.includes(sentence)) {
+      ideas.push(sentence);
     }
-  }, []);
+    cursor += 1;
+  }
 
-  const persist = async (nextNotes, nextTopic) => {
-    setSyncing(true);
-    try {
-      await window.storage.set(
-        STORAGE_KEY,
-        JSON.stringify({
-          notes: nextNotes ?? notesRef.current,
-          topic: nextTopic ?? topicRef.current,
-        }),
-        true
+  return ideas;
+}
+
+function downloadBoard(board) {
+  if (typeof window === 'undefined') return;
+
+  const fileName = `${board.title || DEFAULT_TITLE}`.trim().replace(/\s+/g, '-').slice(0, 24) || 'brainstorm-board';
+  const payload = JSON.stringify(board, null, 2);
+  const blob = new Blob([payload], { type: 'application/json' });
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `${fileName}.json`;
+  anchor.click();
+  window.URL.revokeObjectURL(url);
+}
+
+function toneIndexForNote(note) {
+  return (hashString(note.tag || note.id) % 6) + 1;
+}
+
+function tiltForNote(noteId) {
+  return ((hashString(noteId) % 9) - 4) * 1.1;
+}
+
+function sortNotes(notes, sortBy) {
+  const sorted = [...notes];
+
+  sorted.sort((left, right) => {
+    if (left.pinned !== right.pinned) {
+      return Number(right.pinned) - Number(left.pinned);
+    }
+
+    if (sortBy === 'votes') {
+      return right.votes - left.votes || right.updatedAt - left.updatedAt;
+    }
+
+    if (sortBy === 'tag') {
+      return (
+        left.tag.localeCompare(right.tag, 'zh-Hans-CN') ||
+        right.updatedAt - left.updatedAt
       );
-    } catch (e) {
-      console.error('save failed', e);
     }
-    setTimeout(() => setSyncing(false), 400);
-  };
 
-  // ----------------------------------------------------------
-  // 笔记操作
-  // ----------------------------------------------------------
-  const addNote = (text, tag) => {
-    if (!text || !text.trim()) return;
-    const color = pickColor();
-    const note = {
-      id: rid(),
-      text: text.trim(),
-      bg: color.bg,
-      tape: color.tape,
-      rot: (Math.random() - 0.5) * 5,
-      votes: 0,
-      votedBy: [],
-      tags: tag && tag.trim() ? [tag.trim()] : [],
-      author: userName,
-      createdAt: Date.now(),
-      archived: false,
-    };
-    const next = [...notesRef.current, note];
-    setNotes(next);
-    persist(next);
-  };
+    return right.updatedAt - left.updatedAt;
+  });
 
-  const addBulk = (texts) => {
-    const newNotes = texts
-      .filter((t) => t && t.trim())
-      .map((t) => {
-        const color = pickColor();
-        return {
-          id: rid(),
-          text: t.trim(),
-          bg: color.bg,
-          tape: color.tape,
-          rot: (Math.random() - 0.5) * 5,
-          votes: 0,
-          votedBy: [],
-          tags: ['AI'],
-          author: userName + ' (AI)',
-          createdAt: Date.now() + Math.random(),
-          archived: false,
-        };
-      });
-    const next = [...notesRef.current, ...newNotes];
-    setNotes(next);
-    persist(next);
-  };
+  return sorted;
+}
 
-  const toggleVote = (id) => {
-    const next = notesRef.current.map((n) => {
-      if (n.id !== id) return n;
-      const voted = n.votedBy?.includes(userName);
-      const votedBy = voted
-        ? n.votedBy.filter((u) => u !== userName)
-        : [...(n.votedBy || []), userName];
-      return { ...n, votedBy, votes: votedBy.length };
+function StatCard({ label, value, hint }) {
+  return (
+    <article className="stat-card">
+      <span className="stat-card__label">{label}</span>
+      <strong className="stat-card__value">{value}</strong>
+      <span className="stat-card__hint">{hint}</span>
+    </article>
+  );
+}
+
+function NoteCard({
+  note,
+  onArchiveToggle,
+  onDelete,
+  onFilterTag,
+  onPinToggle,
+  onSave,
+  onVote,
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draftText, setDraftText] = useState(note.text);
+  const [draftTag, setDraftTag] = useState(note.tag);
+  const tone = toneIndexForNote(note);
+  const tilt = tiltForNote(note.id);
+
+  function beginEdit() {
+    setDraftText(note.text);
+    setDraftTag(note.tag);
+    setEditing(true);
+  }
+
+  function submitEdit() {
+    const nextText = draftText.trim();
+    if (!nextText) return;
+
+    onSave(note.id, {
+      text: nextText,
+      tag: draftTag.trim(),
     });
-    setNotes(next);
-    persist(next);
-  };
-
-  const deleteNote = (id) => {
-    const next = notesRef.current.filter((n) => n.id !== id);
-    setNotes(next);
-    persist(next);
-  };
-
-  const toggleArchive = (id) => {
-    const next = notesRef.current.map((n) =>
-      n.id === id ? { ...n, archived: !n.archived } : n
-    );
-    setNotes(next);
-    persist(next);
-  };
-
-  const updateTag = (id, newTag) => {
-    const next = notesRef.current.map((n) =>
-      n.id === id ? { ...n, tags: newTag ? [newTag] : [] } : n
-    );
-    setNotes(next);
-    persist(next);
-  };
-
-  // ----------------------------------------------------------
-  // AI 生成
-  // ----------------------------------------------------------
-  const callAI = async () => {
-    setAiLoading(true);
-    setAiError(null);
-    try {
-      const theme = aiTopic.trim() || topic;
-      const prompt = `你是一位富有创意的头脑风暴教练。请为以下主题生成 6 个简短、有创意、差异化明显的想法。每个想法一句话,8-20 个汉字左右。
-
-主题:${theme}
-
-只返回一个 JSON 数组,格式示例:["想法一", "想法二", "想法三", "想法四", "想法五", "想法六"]
-不要任何解释、不要 markdown 代码块,直接返回 JSON。`;
-
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1000,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-      });
-      const data = await res.json();
-      const textBlock = data.content?.find((b) => b.type === 'text');
-      let raw = textBlock?.text ?? '';
-      raw = raw.replace(/```json|```/g, '').trim();
-      const start = raw.indexOf('[');
-      const end = raw.lastIndexOf(']');
-      if (start !== -1 && end !== -1) raw = raw.slice(start, end + 1);
-      const ideas = JSON.parse(raw);
-      if (!Array.isArray(ideas)) throw new Error('返回格式不对');
-      addBulk(ideas);
-      setAiOpen(false);
-      setAiTopic('');
-    } catch (e) {
-      setAiError('AI 生成失败了,再试一次?(' + (e.message || 'unknown') + ')');
-    }
-    setAiLoading(false);
-  };
-
-  // ----------------------------------------------------------
-  // 随机提示
-  // ----------------------------------------------------------
-  const rollPrompt = () => {
-    let next;
-    do {
-      next = RANDOM_PROMPTS[Math.floor(Math.random() * RANDOM_PROMPTS.length)];
-    } while (next === currentPrompt && RANDOM_PROMPTS.length > 1);
-    setCurrentPrompt(next);
-  };
-
-  // ----------------------------------------------------------
-  // 派生数据
-  // ----------------------------------------------------------
-  const activeNotes = notes.filter((n) => !n.archived);
-  const archivedNotes = notes.filter((n) => n.archived);
-  const allTags = [...new Set(notes.flatMap((n) => n.tags || []))];
-
-  const visibleNotes = (() => {
-    let list = view === 'archive' ? archivedNotes : activeNotes;
-    if (filterTag) list = list.filter((n) => n.tags?.includes(filterTag));
-    if (sortBy === 'votes') list = [...list].sort((a, b) => b.votes - a.votes);
-    else if (sortBy === 'recent') list = [...list].sort((a, b) => b.createdAt - a.createdAt);
-    else if (sortBy === 'random') list = [...list].sort(() => Math.random() - 0.5);
-    return list;
-  })();
-
-  // ==========================================================
-  // 渲染
-  // ==========================================================
-  const paperBg = {
-    background:
-      '#FFF8E7 radial-gradient(circle at 1px 1px, rgba(60,40,20,0.12) 1px, transparent 0) 0 0 / 22px 22px',
-  };
+    setEditing(false);
+  }
 
   return (
-    <div
-      style={{
-        ...paperBg,
-        fontFamily: "'Kalam', 'Gaegu', system-ui, sans-serif",
-        minHeight: '100vh',
-        position: 'relative',
-      }}
-      className="text-stone-800"
+    <article
+      className={`note-card note-card--${tone}`}
+      style={{ '--note-tilt': `${tilt}deg` }}
     >
-      <SketchFilters />
-
-      {/* 噪点纸纹叠加 */}
-      <div
-        style={{
-          position: 'absolute',
-          inset: 0,
-          pointerEvents: 'none',
-          opacity: 0.35,
-          mixBlendMode: 'multiply',
-        }}
-      >
-        <svg width="100%" height="100%">
-          <rect width="100%" height="100%" filter="url(#paper)" />
-        </svg>
-      </div>
-
-      <div style={{ position: 'relative', zIndex: 1 }} className="max-w-7xl mx-auto px-4 py-6">
-        {/* ========== 顶部标题栏 ========== */}
-        <header className="mb-5">
-          <div className="flex items-start justify-between gap-4 flex-wrap">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 text-stone-600 mb-1" style={{ fontFamily: "'Caveat', cursive" }}>
-                <Sparkles size={20} className="text-amber-500" />
-                <span className="text-xl">欢迎来到头脑风暴板</span>
-              </div>
-              {editingTopic ? (
-                <div className="flex items-center gap-2">
-                  <input
-                    autoFocus
-                    value={topic}
-                    onChange={(e) => setTopic(e.target.value)}
-                    onBlur={() => {
-                      setEditingTopic(false);
-                      persist(null, topic);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        setEditingTopic(false);
-                        persist(null, topic);
-                      }
-                    }}
-                    className="text-4xl md:text-5xl bg-transparent border-b-2 border-dashed border-stone-400 outline-none font-bold w-full"
-                    style={{ fontFamily: "'Caveat', cursive" }}
-                  />
-                </div>
-              ) : (
-                <h1
-                  onClick={() => setEditingTopic(true)}
-                  className="text-4xl md:text-5xl font-bold cursor-text hover:text-amber-700 transition-colors break-words"
-                  style={{ fontFamily: "'Caveat', cursive" }}
-                  title="点击编辑主题"
-                >
-                  {topic}
-                  <Pencil size={18} className="inline ml-2 opacity-30" />
-                </h1>
-              )}
-            </div>
-
-            {/* 用户身份 */}
-            <div className="flex items-center gap-3 bg-white/70 px-3 py-2 rounded-xl border-2 border-stone-800"
-                 style={{ boxShadow: '3px 3px 0 #1c1917' }}>
-              <Users size={18} />
-              {editingName ? (
-                <div className="flex items-center gap-1">
-                  <input
-                    autoFocus
-                    value={nameInput}
-                    onChange={(e) => setNameInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        setUserName(nameInput.trim() || userName);
-                        setEditingName(false);
-                      }
-                    }}
-                    className="bg-transparent border-b border-stone-500 outline-none w-20 text-sm"
-                  />
-                  <button
-                    onClick={() => {
-                      setUserName(nameInput.trim() || userName);
-                      setEditingName(false);
-                    }}
-                    className="text-emerald-600 hover:text-emerald-800"
-                  >
-                    <Check size={16} />
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setEditingName(true)}
-                  className="text-sm font-bold hover:text-amber-700"
-                  style={{ fontFamily: "'Kalam', sans-serif" }}
-                >
-                  {userName}
-                </button>
-              )}
-              <button
-                onClick={loadFromStorage}
-                title="同步队友"
-                className="text-stone-600 hover:text-stone-900"
-              >
-                <RefreshCw size={16} className={syncing ? 'animate-spin' : ''} />
-              </button>
-            </div>
-          </div>
-        </header>
-
-        {/* ========== 工具条 ========== */}
-        <div className="flex flex-wrap gap-2 mb-4 items-center">
-          <SketchBtn onClick={() => setShowDraft(true)} color="#FFE864">
-            <Plus size={18} /> 新想法
-          </SketchBtn>
-          <SketchBtn onClick={() => setAiOpen(true)} color="#D9B8FF">
-            <Sparkles size={18} /> AI 助力
-          </SketchBtn>
-          <SketchBtn onClick={rollPrompt} color="#B8F5D0">
-            <Dices size={18} /> 随机提示
-          </SketchBtn>
-
-          <div className="ml-auto flex gap-1 bg-white/70 p-1 rounded-lg border-2 border-stone-800"
-               style={{ boxShadow: '2px 2px 0 #1c1917' }}>
-            <ViewTab active={view === 'wall'} onClick={() => setView('wall')} icon={Grid3x3} label="卡片墙" />
-            <ViewTab active={view === 'mindmap'} onClick={() => setView('mindmap')} icon={GitBranch} label="思维导图" />
-            <ViewTab active={view === 'archive'} onClick={() => setView('archive')} icon={Archive} label={`归档(${archivedNotes.length})`} />
-          </div>
-        </div>
-
-        {/* 标签 + 排序 */}
-        <div className="flex flex-wrap gap-2 mb-5 items-center text-sm">
-          <TagIcon size={14} className="text-stone-600" />
-          <TagChip active={filterTag === null} onClick={() => setFilterTag(null)}>全部</TagChip>
-          {allTags.map((t) => (
-            <TagChip key={t} active={filterTag === t} onClick={() => setFilterTag(filterTag === t ? null : t)}>
-              {t}
-            </TagChip>
-          ))}
-          <div className="ml-auto flex items-center gap-2 text-stone-600">
-            <span style={{ fontFamily: "'Caveat', cursive" }} className="text-lg">排序:</span>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              className="bg-white/70 border-2 border-stone-800 rounded-md px-2 py-0.5 outline-none"
-              style={{ boxShadow: '2px 2px 0 #1c1917', fontFamily: "'Kalam', sans-serif" }}
-            >
-              <option value="recent">最新</option>
-              <option value="votes">票数</option>
-              <option value="random">随机</option>
-            </select>
-          </div>
-        </div>
-
-        {/* 随机提示横幅 */}
-        {currentPrompt && (
-          <div
-            className="mb-5 p-4 rounded-xl border-2 border-stone-800 flex items-start gap-3"
-            style={{
-              background: '#FFF4B8',
-              boxShadow: '4px 4px 0 #1c1917',
-              transform: 'rotate(-0.4deg)',
-            }}
-          >
-            <Dices size={22} className="mt-1 flex-shrink-0" />
-            <div className="flex-1">
-              <div className="text-xs uppercase tracking-widest text-stone-600 mb-0.5"
-                   style={{ fontFamily: "'Kalam', sans-serif" }}>今天的灵感题</div>
-              <div className="text-2xl font-bold" style={{ fontFamily: "'Caveat', cursive" }}>
-                {currentPrompt}
-              </div>
-            </div>
-            <button onClick={() => setCurrentPrompt(null)} className="text-stone-500 hover:text-stone-800">
-              <X size={18} />
-            </button>
-          </div>
-        )}
-
-        {/* ========== 主内容区 ========== */}
-        {!loaded ? (
-          <div className="text-center py-20 text-stone-500" style={{ fontFamily: "'Caveat', cursive", fontSize: 28 }}>
-            正在拉便签板...
-          </div>
-        ) : view === 'mindmap' ? (
-          <MindMap topic={topic} notes={activeNotes} />
-        ) : visibleNotes.length === 0 ? (
-          <EmptyState onAdd={() => setShowDraft(true)} onAI={() => setAiOpen(true)} view={view} />
-        ) : (
-          <div
-            className="gap-4"
-            style={{
-              columnCount: 'auto',
-              columnWidth: '220px',
-              columnGap: '1rem',
-            }}
-          >
-            {visibleNotes.map((n) => (
-              <StickyNote
-                key={n.id}
-                note={n}
-                userName={userName}
-                onVote={() => toggleVote(n.id)}
-                onDelete={() => deleteNote(n.id)}
-                onArchive={() => toggleArchive(n.id)}
-                onTag={(t) => updateTag(n.id, t)}
-                archiveMode={view === 'archive'}
-              />
-            ))}
-          </div>
-        )}
-
-        {/* 页脚 */}
-        <footer className="mt-10 pt-5 border-t-2 border-dashed border-stone-300 text-center text-stone-500 text-sm"
-                style={{ fontFamily: "'Caveat', cursive", fontSize: 18 }}>
-          共 {activeNotes.length} 个想法 · {allTags.length} 个分类 · 团队共享 ✎
-        </footer>
-      </div>
-
-      {/* ========== 新想法弹窗 ========== */}
-      {showDraft && (
-        <Modal onClose={() => setShowDraft(false)} title="贴一个新想法">
-          <textarea
-            autoFocus
-            value={draft.text}
-            onChange={(e) => setDraft({ ...draft, text: e.target.value })}
-            placeholder="写下你刚冒出来的那个念头..."
-            className="w-full p-3 border-2 border-stone-800 rounded-lg outline-none resize-none bg-yellow-50"
-            style={{ minHeight: 100, fontFamily: "'Kalam', sans-serif", fontSize: 18, boxShadow: '3px 3px 0 #1c1917' }}
-          />
-          <input
-            value={draft.tag}
-            onChange={(e) => setDraft({ ...draft, tag: e.target.value })}
-            placeholder="标签(可选),例如: 产品、技术、灵感"
-            className="w-full mt-3 p-2 border-2 border-stone-800 rounded-lg outline-none bg-white/70"
-            style={{ fontFamily: "'Kalam', sans-serif", boxShadow: '3px 3px 0 #1c1917' }}
-          />
-          <div className="flex gap-2 justify-end mt-4">
-            <SketchBtn onClick={() => setShowDraft(false)} color="#E7E5E4">取消</SketchBtn>
-            <SketchBtn
-              onClick={() => {
-                addNote(draft.text, draft.tag);
-                setDraft({ text: '', tag: '' });
-                setShowDraft(false);
-              }}
-              color="#FFE864"
-            >
-              <Send size={16} /> 贴上去
-            </SketchBtn>
-          </div>
-        </Modal>
-      )}
-
-      {/* ========== AI 弹窗 ========== */}
-      {aiOpen && (
-        <Modal onClose={() => !aiLoading && setAiOpen(false)} title="AI 帮我想 6 个">
-          <p className="text-stone-600 mb-3" style={{ fontFamily: "'Kalam', sans-serif" }}>
-            让 Claude 围绕一个方向快速扔 6 个想法上墙。留空会用主板的主题。
-          </p>
-          <input
-            autoFocus
-            value={aiTopic}
-            onChange={(e) => setAiTopic(e.target.value)}
-            placeholder={`例如: ${topic}`}
-            className="w-full p-2 border-2 border-stone-800 rounded-lg outline-none bg-white/70"
-            style={{ fontFamily: "'Kalam', sans-serif", boxShadow: '3px 3px 0 #1c1917' }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !aiLoading) callAI();
-            }}
-          />
-          {aiError && (
-            <div className="mt-3 p-2 bg-red-100 border-2 border-red-800 rounded text-red-900 text-sm"
-                 style={{ fontFamily: "'Kalam', sans-serif" }}>
-              {aiError}
-            </div>
-          )}
-          <div className="flex gap-2 justify-end mt-4">
-            <SketchBtn onClick={() => !aiLoading && setAiOpen(false)} color="#E7E5E4">取消</SketchBtn>
-            <SketchBtn onClick={callAI} color="#D9B8FF" disabled={aiLoading}>
-              <Sparkles size={16} /> {aiLoading ? '召唤中...' : '开始召唤'}
-            </SketchBtn>
-          </div>
-        </Modal>
-      )}
-    </div>
-  );
-}
-
-// ============================================================
-// 便签组件
-// ============================================================
-function StickyNote({ note, userName, onVote, onDelete, onArchive, onTag, archiveMode }) {
-  const [editingTag, setEditingTag] = useState(false);
-  const [tagInput, setTagInput] = useState(note.tags?.[0] || '');
-  const voted = note.votedBy?.includes(userName);
-
-  return (
-    <div
-      className="mb-4 break-inside-avoid relative group"
-      style={{
-        background: note.bg,
-        padding: '28px 16px 14px',
-        borderRadius: 4,
-        transform: `rotate(${note.rot}deg)`,
-        boxShadow: '3px 4px 8px rgba(60,40,20,0.2), 0 0 0 1px rgba(60,40,20,0.08)',
-        transition: 'transform 0.2s, box-shadow 0.2s',
-        fontFamily: "'Kalam', 'Gaegu', sans-serif",
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.transform = 'rotate(0deg) scale(1.03)';
-        e.currentTarget.style.boxShadow = '5px 7px 14px rgba(60,40,20,0.3), 0 0 0 1px rgba(60,40,20,0.08)';
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.transform = `rotate(${note.rot}deg)`;
-        e.currentTarget.style.boxShadow = '3px 4px 8px rgba(60,40,20,0.2), 0 0 0 1px rgba(60,40,20,0.08)';
-      }}
-    >
-      {/* 胶带 */}
-      <div
-        style={{
-          position: 'absolute',
-          top: -8,
-          left: '50%',
-          width: 58,
-          height: 18,
-          background: note.tape,
-          transform: 'translateX(-50%) rotate(-2deg)',
-          opacity: 0.85,
-          boxShadow: '1px 1px 3px rgba(0,0,0,0.15)',
-        }}
-      />
-
-      {/* 文字 */}
-      <p className="text-stone-900 text-base leading-snug whitespace-pre-wrap break-words"
-         style={{ fontSize: 17, lineHeight: 1.4 }}>
-        {note.text}
-      </p>
-
-      {/* 元信息 */}
-      <div className="mt-3 flex items-center gap-2 flex-wrap text-xs text-stone-700">
-        <span style={{ fontFamily: "'Caveat', cursive", fontSize: 15 }}>— {note.author}</span>
-      </div>
-
-      {/* 标签 */}
-      <div className="mt-2 flex items-center gap-1 flex-wrap">
-        {editingTag ? (
-          <input
-            autoFocus
-            value={tagInput}
-            onChange={(e) => setTagInput(e.target.value)}
-            onBlur={() => {
-              onTag(tagInput.trim());
-              setEditingTag(false);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                onTag(tagInput.trim());
-                setEditingTag(false);
-              }
-            }}
-            className="text-xs bg-white/50 border border-stone-600 rounded px-1 outline-none w-20"
-          />
-        ) : note.tags?.length ? (
-          note.tags.map((t) => (
-            <span
-              key={t}
-              onClick={() => setEditingTag(true)}
-              className="text-xs bg-black/10 px-2 py-0.5 rounded-full cursor-pointer hover:bg-black/20"
-            >
-              #{t}
-            </span>
-          ))
-        ) : (
-          <button
-            onClick={() => setEditingTag(true)}
-            className="text-xs text-stone-600 hover:text-stone-900 opacity-0 group-hover:opacity-100 transition"
-          >
-            + 标签
-          </button>
-        )}
-      </div>
-
-      {/* 操作栏 */}
-      <div className="mt-3 flex items-center justify-between">
+      <div className="note-card__tape" aria-hidden="true" />
+      <header className="note-card__header">
         <button
-          onClick={onVote}
-          className="flex items-center gap-1 text-sm hover:scale-110 transition"
-          title={voted ? '取消投票' : '投一票'}
+          className="note-card__tag"
+          type="button"
+          onClick={() => onFilterTag(note.tag)}
+          disabled={!note.tag}
         >
-          <Heart
-            size={18}
-            fill={voted ? '#E11D48' : 'none'}
-            color={voted ? '#E11D48' : '#44403C'}
-            strokeWidth={2.5}
-          />
-          <span className="font-bold">{note.votes}</span>
+          {note.tag || '未分类'}
         </button>
+        {note.pinned ? <span className="note-card__pin">置顶</span> : null}
+      </header>
 
-        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition">
-          <button
-            onClick={onArchive}
-            className="p-1 hover:bg-black/10 rounded"
-            title={archiveMode ? '恢复' : '归档'}
-          >
-            {archiveMode ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-          </button>
-          <button
-            onClick={() => {
-              if (confirm('删除这条想法?')) onDelete();
-            }}
-            className="p-1 hover:bg-red-200 rounded text-red-700"
-            title="删除"
-          >
-            <Trash2 size={14} />
-          </button>
+      {editing ? (
+        <div className="note-card__editor">
+          <textarea
+            className="field__control field__control--textarea note-card__textarea"
+            value={draftText}
+            onChange={(event) => setDraftText(event.target.value)}
+          />
+          <input
+            className="field__control"
+            value={draftTag}
+            onChange={(event) => setDraftTag(event.target.value)}
+            placeholder="标签"
+          />
         </div>
+      ) : (
+        <p className="note-card__body">{note.text}</p>
+      )}
+
+      <footer className="note-card__meta">
+        <span>{note.author}</span>
+        <span>{formatNoteTime(note.updatedAt || note.createdAt)}</span>
+      </footer>
+
+      <div className="note-card__actions">
+        <button className="mini-button" type="button" onClick={() => onVote(note.id)}>
+          <Vote size={15} />
+          {note.votes}
+        </button>
+        <button className="mini-button" type="button" onClick={() => onPinToggle(note.id)}>
+          {note.pinned ? '取消置顶' : '置顶'}
+        </button>
+        <button className="mini-button" type="button" onClick={() => onArchiveToggle(note.id)}>
+          {note.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />}
+          {note.archived ? '恢复' : '归档'}
+        </button>
+        {editing ? (
+          <>
+            <button className="mini-button mini-button--accent" type="button" onClick={submitEdit}>
+              <Check size={15} />
+              保存
+            </button>
+            <button className="mini-button" type="button" onClick={() => setEditing(false)}>
+              <X size={15} />
+              取消
+            </button>
+          </>
+        ) : (
+          <button className="mini-button" type="button" onClick={beginEdit}>
+            <Pencil size={15} />
+            编辑
+          </button>
+        )}
+        <button
+          className="mini-button mini-button--danger"
+          type="button"
+          onClick={() => onDelete(note.id)}
+        >
+          <Trash2 size={15} />
+          删除
+        </button>
       </div>
-    </div>
+    </article>
   );
 }
 
-// ============================================================
-// 思维导图
-// ============================================================
-function MindMap({ topic, notes }) {
-  if (notes.length === 0) {
-    return (
-      <div className="text-center py-20 text-stone-500" style={{ fontFamily: "'Caveat', cursive", fontSize: 28 }}>
-        先去卡片墙贴几个想法,导图就活了 ✎
-      </div>
+function App() {
+  const [board, setBoard] = useState(loadBoard);
+  const [composer, setComposer] = useState({
+    text: '',
+    tag: TAG_SUGGESTIONS[0],
+  });
+  const [promptIndex, setPromptIndex] = useState(0);
+  const [burstCursor, setBurstCursor] = useState(0);
+  const [filters, setFilters] = useState({
+    scope: 'active',
+    tag: 'all',
+    sort: 'recent',
+    search: '',
+  });
+  const [notice, setNotice] = useState(null);
+  const deferredSearch = useDeferredValue(filters.search);
+  const importInputId = useId();
+  const lastSerializedRef = useRef('');
+
+  const activeNotes = useMemo(
+    () => board.notes.filter((note) => !note.archived),
+    [board.notes]
+  );
+  const archivedNotes = useMemo(
+    () => board.notes.filter((note) => note.archived),
+    [board.notes]
+  );
+  const tagOptions = useMemo(() => {
+    return [...new Set(board.notes.map((note) => note.tag).filter(Boolean))].sort((left, right) =>
+      left.localeCompare(right, 'zh-Hans-CN')
+    );
+  }, [board.notes]);
+  const topTag = useMemo(() => {
+    const counts = new Map();
+    activeNotes.forEach((note) => {
+      if (!note.tag) return;
+      counts.set(note.tag, (counts.get(note.tag) || 0) + 1);
+    });
+
+    let winner = '等待聚类';
+    let max = 0;
+    counts.forEach((count, tag) => {
+      if (count > max) {
+        winner = tag;
+        max = count;
+      }
+    });
+    return winner;
+  }, [activeNotes]);
+  const currentPrompt = PROMPT_DECK[promptIndex % PROMPT_DECK.length];
+  const visibleNotes = useMemo(() => {
+    const scopeNotes = filters.scope === 'archived' ? archivedNotes : activeNotes;
+    const search = deferredSearch.trim().toLowerCase();
+
+    const filtered = scopeNotes.filter((note) => {
+      const tagMatch = filters.tag === 'all' || note.tag === filters.tag;
+      if (!tagMatch) return false;
+
+      if (!search) return true;
+
+      const haystack = `${note.text} ${note.tag} ${note.author}`.toLowerCase();
+      return haystack.includes(search);
+    });
+
+    return sortNotes(filtered, filters.sort);
+  }, [activeNotes, archivedNotes, deferredSearch, filters.scope, filters.sort, filters.tag]);
+
+  const applyIncomingBoard = useEffectEvent((serializedBoard) => {
+    if (!serializedBoard || serializedBoard === lastSerializedRef.current) return;
+
+    try {
+      const nextBoard = normalizeBoard(JSON.parse(serializedBoard));
+      lastSerializedRef.current = serializedBoard;
+      setBoard(nextBoard);
+      setNotice({ tone: 'info', text: '已同步其他标签页里的最新内容。' });
+    } catch {
+      setNotice({ tone: 'error', text: '收到了一份损坏的同步数据，已忽略。' });
+    }
+  });
+
+  useEffect(() => {
+    const serializedBoard = JSON.stringify(board);
+    if (serializedBoard === lastSerializedRef.current) return;
+    lastSerializedRef.current = serializedBoard;
+    persistBoard(serializedBoard);
+  }, [board]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    function handleStorage(event) {
+      if (event.key !== STORAGE_KEY) return;
+
+      if (!event.newValue) {
+        setBoard(createInitialBoard());
+        setNotice({ tone: 'info', text: '共享板已被清空，当前视图已重置。' });
+        return;
+      }
+
+      applyIncomingBoard(event.newValue);
+    }
+
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
+
+  useEffect(() => {
+    if (!notice || typeof window === 'undefined') return undefined;
+
+    const timer = window.setTimeout(() => setNotice(null), 2600);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  function handleBoardField(field, value, fallback) {
+    setBoard((current) =>
+      touchBoard({
+        ...current,
+        [field]: value.trim() || fallback,
+      })
     );
   }
 
-  const W = 900;
-  const H = Math.max(500, notes.length * 48 + 200);
-  const cx = W / 2;
-  const cy = H / 2;
-  const R = Math.min(W, H) * 0.38;
+  function handleAddNote(event) {
+    event.preventDefault();
+    const text = composer.text.trim();
+    if (!text) return;
 
-  const positions = notes.map((n, i) => {
-    const angle = (i / notes.length) * Math.PI * 2 - Math.PI / 2;
-    const jitter = 20 + Math.random() * 30;
-    return {
-      x: cx + Math.cos(angle) * (R + jitter),
-      y: cy + Math.sin(angle) * (R + jitter),
-      note: n,
-    };
-  });
+    const note = createNote({
+      text,
+      tag: composer.tag,
+      author: board.owner,
+    });
+
+    setBoard((current) => appendNotes(current, [note]));
+    setComposer((current) => ({ ...current, text: '' }));
+    setNotice({ tone: 'success', text: '新卡片已经贴到墙上。' });
+  }
+
+  function handleGeneratePack() {
+    const generatedNotes = createIdeaBurst(board.title, currentPrompt, 5, burstCursor).map((text) =>
+      createNote({
+        text,
+        tag: currentPrompt.tag,
+        author: '灵感引擎',
+      })
+    );
+
+    startTransition(() => {
+      setBoard((current) => appendNotes(current, generatedNotes));
+      setBurstCursor((current) => current + 1);
+      setNotice({ tone: 'success', text: '已基于题卡补了 5 张热身卡。' });
+    });
+  }
+
+  function handlePinPrompt() {
+    const promptNote = createNote({
+      text: currentPrompt.prompt,
+      tag: currentPrompt.tag,
+      author: '主持人提示',
+      pinned: true,
+    });
+
+    setBoard((current) => appendNotes(current, [promptNote]));
+    setNotice({ tone: 'success', text: '题卡已经贴到墙上作为讨论锚点。' });
+  }
+
+  function handleVote(noteId) {
+    setBoard((current) =>
+      patchNote(current, noteId, (note) => ({
+        votes: note.votes + 1,
+      }))
+    );
+  }
+
+  function handleArchiveToggle(noteId) {
+    setBoard((current) =>
+      patchNote(current, noteId, (note) => ({
+        archived: !note.archived,
+      }))
+    );
+  }
+
+  function handlePinToggle(noteId) {
+    setBoard((current) =>
+      patchNote(current, noteId, (note) => ({
+        pinned: !note.pinned,
+      }))
+    );
+  }
+
+  function handleSaveNote(noteId, updates) {
+    setBoard((current) =>
+      patchNote(current, noteId, () => ({
+        text: updates.text,
+        tag: updates.tag,
+      }))
+    );
+    setNotice({ tone: 'success', text: '卡片内容已更新。' });
+  }
+
+  function handleDeleteNote(noteId) {
+    setBoard((current) => deleteNote(current, noteId));
+    setNotice({ tone: 'success', text: '卡片已移除。' });
+  }
+
+  function handleExportBoard() {
+    downloadBoard(board);
+    setNotice({ tone: 'success', text: '已导出当前工作板 JSON。' });
+  }
+
+  async function handleImportBoard(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const importedBoard = normalizeBoard(JSON.parse(text));
+
+      startTransition(() => {
+        setBoard(importedBoard);
+        setNotice({ tone: 'success', text: '导入完成，当前工作板已替换。' });
+      });
+    } catch {
+      setNotice({ tone: 'error', text: '导入失败，请确认文件是有效的 JSON 工作板。' });
+    }
+  }
 
   return (
-    <div className="bg-white/60 border-2 border-stone-800 rounded-xl overflow-auto"
-         style={{ boxShadow: '4px 4px 0 #1c1917' }}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', minHeight: 500 }}>
-        {/* 连线 */}
-        {positions.map((p, i) => (
-          <path
-            key={'l' + i}
-            d={`M ${cx} ${cy} Q ${(cx + p.x) / 2 + (Math.random() - 0.5) * 40} ${(cy + p.y) / 2 + (Math.random() - 0.5) * 40} ${p.x} ${p.y}`}
-            stroke="#78716C"
-            strokeWidth={2}
-            fill="none"
-            strokeDasharray="2 4"
-            filter="url(#roughen)"
-          />
-        ))}
+    <div className="app-shell">
+      <div className="app-shell__glow app-shell__glow--one" aria-hidden="true" />
+      <div className="app-shell__glow app-shell__glow--two" aria-hidden="true" />
+      <div className="app-shell__grid" aria-hidden="true" />
 
-        {/* 中心主题 */}
-        <g transform={`translate(${cx}, ${cy})`}>
-          <ellipse
-            rx={110}
-            ry={55}
-            fill="#FFE864"
-            stroke="#1C1917"
-            strokeWidth={3}
-            filter="url(#roughen)"
-          />
-          <text
-            textAnchor="middle"
-            dominantBaseline="central"
-            fontFamily="'Caveat', cursive"
-            fontSize={28}
-            fontWeight="bold"
-            fill="#1C1917"
-          >
-            {topic.length > 10 ? topic.slice(0, 10) + '…' : topic}
-          </text>
-        </g>
+      <header className="hero">
+        <div className="hero__copy">
+          <span className="eyebrow">Workshop-ready Brainstorm Studio</span>
+          <label className="hero__title-wrap">
+            <span className="sr-only">工作板标题</span>
+            <input
+              className="hero__title"
+              value={board.title}
+              onChange={(event) => handleBoardField('title', event.target.value, DEFAULT_TITLE)}
+            />
+          </label>
+          <p className="hero__description">
+            一个可直接拿来主持讨论的灵感板。支持本地自动保存、跨标签页同步、按标签聚类、
+            置顶与归档管理，以及一键导入导出 JSON。
+          </p>
 
-        {/* 周围的想法 */}
-        {positions.map((p, i) => {
-          const text = p.note.text.length > 22 ? p.note.text.slice(0, 22) + '…' : p.note.text;
-          const w = Math.min(180, Math.max(90, text.length * 10));
-          return (
-            <g key={p.note.id} transform={`translate(${p.x}, ${p.y}) rotate(${p.note.rot})`}>
-              <rect
-                x={-w / 2}
-                y={-24}
-                width={w}
-                height={48}
-                fill={p.note.bg}
-                stroke="#1C1917"
-                strokeWidth={2}
-                filter="url(#roughen)"
-                rx={4}
+          <div className="hero__meta">
+            <label className="presence-card">
+              <Users size={18} />
+              <span className="sr-only">主持人名称</span>
+              <input
+                className="presence-card__input"
+                value={board.owner}
+                onChange={(event) => handleBoardField('owner', event.target.value, DEFAULT_OWNER)}
               />
-              <text
-                textAnchor="middle"
-                dominantBaseline="central"
-                fontFamily="'Kalam', sans-serif"
-                fontSize={14}
-                fill="#1C1917"
+            </label>
+            <span className="autosave-pill">
+              <RefreshCw size={15} />
+              已自动保存 · {formatClock(board.updatedAt)}
+            </span>
+          </div>
+
+          <div className="stats-grid">
+            <StatCard label="活跃卡片" value={activeNotes.length} hint="当前参与筛选与投票" />
+            <StatCard label="归档卡片" value={archivedNotes.length} hint="沉淀过的历史方向" />
+            <StatCard
+              label="最高票数"
+              value={activeNotes.reduce((max, note) => Math.max(max, note.votes), 0)}
+              hint="方便会后优先排期"
+            />
+            <StatCard label="最热标签" value={topTag} hint="现在最集中的讨论区" />
+          </div>
+        </div>
+
+        <aside className="prompt-card">
+          <div className="prompt-card__kicker">
+            <Sparkles size={16} />
+            {currentPrompt.kicker}
+          </div>
+          <h2>{currentPrompt.title}</h2>
+          <p>{currentPrompt.prompt}</p>
+          <div className="prompt-card__actions">
+            <button
+              className="button button--ghost"
+              type="button"
+              onClick={() => setPromptIndex((current) => (current + 1) % PROMPT_DECK.length)}
+            >
+              <RefreshCw size={16} />
+              换一张题卡
+            </button>
+            <button className="button button--secondary" type="button" onClick={handlePinPrompt}>
+              <Plus size={16} />
+              贴到墙上
+            </button>
+            <button className="button button--accent" type="button" onClick={handleGeneratePack}>
+              <WandSparkles size={16} />
+              补 5 张热身卡
+            </button>
+          </div>
+        </aside>
+      </header>
+
+      {notice ? (
+        <div className={`notice notice--${notice.tone}`}>{notice.text}</div>
+      ) : null}
+
+      <main className="workspace">
+        <aside className="workspace__aside">
+          <section className="panel">
+            <div className="panel__header">
+              <div>
+                <span className="eyebrow">Quick Capture</span>
+                <h3>立刻贴一张</h3>
+              </div>
+              <span className="panel__hint">手动输入适合现场主持。</span>
+            </div>
+
+            <form className="stack" onSubmit={handleAddNote}>
+              <label className="field">
+                <span className="field__label">想法内容</span>
+                <textarea
+                  className="field__control field__control--textarea"
+                  placeholder="把一句值得被讨论的想法写下来。"
+                  value={composer.text}
+                  onChange={(event) =>
+                    setComposer((current) => ({ ...current, text: event.target.value }))
+                  }
+                />
+              </label>
+
+              <label className="field">
+                <span className="field__label">标签</span>
+                <input
+                  className="field__control"
+                  value={composer.tag}
+                  onChange={(event) =>
+                    setComposer((current) => ({ ...current, tag: event.target.value }))
+                  }
+                  placeholder="例如：产品、增长、商业"
+                />
+              </label>
+
+              <div className="chip-row">
+                {TAG_SUGGESTIONS.map((tag) => (
+                  <button
+                    key={tag}
+                    className={`chip ${composer.tag === tag ? 'chip--active' : ''}`}
+                    type="button"
+                    onClick={() => setComposer((current) => ({ ...current, tag }))}
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+
+              <button className="button button--accent button--full" type="submit">
+                <Plus size={16} />
+                贴上去
+              </button>
+            </form>
+          </section>
+
+          <section className="panel">
+            <div className="panel__header">
+              <div>
+                <span className="eyebrow">Board Ops</span>
+                <h3>搬运与交接</h3>
+              </div>
+              <span className="panel__hint">把工作板带到别的机器或会前准备里。</span>
+            </div>
+
+            <div className="stack">
+              <button className="button button--secondary button--full" type="button" onClick={handleExportBoard}>
+                <Download size={16} />
+                导出当前 JSON
+              </button>
+
+              <label className="button button--ghost button--full upload-button" htmlFor={importInputId}>
+                <Upload size={16} />
+                导入已有工作板
+              </label>
+              <input
+                id={importInputId}
+                className="sr-only"
+                type="file"
+                accept="application/json"
+                onChange={handleImportBoard}
+              />
+            </div>
+          </section>
+        </aside>
+
+        <section className="workspace__main">
+          <section className="panel panel--filters">
+            <div className="panel__header panel__header--compact">
+              <div>
+                <span className="eyebrow">Signal Control</span>
+                <h3>筛选与排序</h3>
+              </div>
+              <span className="panel__hint">
+                当前显示 {visibleNotes.length} 张卡片
+              </span>
+            </div>
+
+            <div className="filter-layout">
+              <div className="segmented">
+                <button
+                  className={filters.scope === 'active' ? 'is-active' : ''}
+                  type="button"
+                  onClick={() => setFilters((current) => ({ ...current, scope: 'active' }))}
+                >
+                  活跃
+                </button>
+                <button
+                  className={filters.scope === 'archived' ? 'is-active' : ''}
+                  type="button"
+                  onClick={() => setFilters((current) => ({ ...current, scope: 'archived' }))}
+                >
+                  归档
+                </button>
+              </div>
+
+              <label className="field">
+                <span className="field__label">搜索</span>
+                <input
+                  className="field__control"
+                  placeholder="按内容、作者或标签检索"
+                  value={filters.search}
+                  onChange={(event) =>
+                    setFilters((current) => ({ ...current, search: event.target.value }))
+                  }
+                />
+              </label>
+
+              <label className="field">
+                <span className="field__label">排序</span>
+                <select
+                  className="field__control"
+                  value={filters.sort}
+                  onChange={(event) =>
+                    setFilters((current) => ({ ...current, sort: event.target.value }))
+                  }
+                >
+                  <option value="recent">最近更新</option>
+                  <option value="votes">票数优先</option>
+                  <option value="tag">按标签</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="chip-row chip-row--spacious">
+              <button
+                className={`chip ${filters.tag === 'all' ? 'chip--active' : ''}`}
+                type="button"
+                onClick={() => setFilters((current) => ({ ...current, tag: 'all' }))}
               >
-                {text}
-              </text>
-              {p.note.votes > 0 && (
-                <g transform={`translate(${w / 2 - 4}, ${-20})`}>
-                  <circle r={10} fill="#E11D48" />
-                  <text textAnchor="middle" dominantBaseline="central" fill="white" fontSize={11} fontWeight="bold">
-                    {p.note.votes}
-                  </text>
-                </g>
-              )}
-            </g>
-          );
-        })}
-      </svg>
+                全部标签
+              </button>
+              {tagOptions.map((tag) => (
+                <button
+                  key={tag}
+                  className={`chip ${filters.tag === tag ? 'chip--active' : ''}`}
+                  type="button"
+                  onClick={() => setFilters((current) => ({ ...current, tag }))}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {visibleNotes.length ? (
+            <section className="note-grid">
+              {visibleNotes.map((note) => (
+                <NoteCard
+                  key={note.id}
+                  note={note}
+                  onArchiveToggle={handleArchiveToggle}
+                  onDelete={handleDeleteNote}
+                  onFilterTag={(tag) =>
+                    setFilters((current) => ({ ...current, scope: 'active', tag: tag || 'all' }))
+                  }
+                  onPinToggle={handlePinToggle}
+                  onSave={handleSaveNote}
+                  onVote={handleVote}
+                />
+              ))}
+            </section>
+          ) : (
+            <section className="empty-state">
+              <span className="empty-state__eyebrow">Nothing on the wall</span>
+              <h3>{filters.scope === 'archived' ? '归档区还是空的' : '还没有符合条件的卡片'}</h3>
+              <p>
+                {filters.scope === 'archived'
+                  ? '把成熟或暂缓的方向归档后，它们会出现在这里。'
+                  : '可以手动贴一张，或者用右上角题卡快速生成一组热身灵感。'}
+              </p>
+            </section>
+          )}
+        </section>
+      </main>
     </div>
   );
 }
 
-// ============================================================
-// 空状态
-// ============================================================
-function EmptyState({ onAdd, onAI, view }) {
-  const msg = view === 'archive' ? '归档柜空空如也 📂' : '便签墙还很干净...\n来贴第一个想法吧!';
-  return (
-    <div className="text-center py-16">
-      <div className="inline-block relative">
-        <svg width="120" height="120" viewBox="0 0 120 120" className="mx-auto opacity-60">
-          <path
-            d="M 20 30 Q 60 10 100 30 Q 110 60 100 90 Q 60 110 20 90 Q 10 60 20 30 Z"
-            fill="#FFE864"
-            stroke="#1C1917"
-            strokeWidth={3}
-            filter="url(#roughen)"
-          />
-          <text x="60" y="70" textAnchor="middle" fontSize={40} fontFamily="'Caveat', cursive">?</text>
-        </svg>
-      </div>
-      <p className="text-2xl text-stone-600 whitespace-pre-line mb-6" style={{ fontFamily: "'Caveat', cursive" }}>
-        {msg}
-      </p>
-      {view !== 'archive' && (
-        <div className="flex gap-3 justify-center">
-          <SketchBtn onClick={onAdd} color="#FFE864"><Plus size={16} /> 手动贴一个</SketchBtn>
-          <SketchBtn onClick={onAI} color="#D9B8FF"><Sparkles size={16} /> AI 帮我起头</SketchBtn>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ============================================================
-// 小组件
-// ============================================================
-function SketchBtn({ children, onClick, color = '#FFFFFF', disabled }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className="px-3 py-2 border-2 border-stone-800 rounded-lg font-bold text-sm flex items-center gap-1.5 hover:-translate-y-0.5 active:translate-y-0 transition disabled:opacity-50 disabled:cursor-not-allowed"
-      style={{
-        background: color,
-        boxShadow: '3px 3px 0 #1c1917',
-        fontFamily: "'Kalam', sans-serif",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
-function ViewTab({ active, onClick, icon: Icon, label }) {
-  return (
-    <button
-      onClick={onClick}
-      className="px-3 py-1.5 rounded-md text-sm flex items-center gap-1.5 font-bold transition"
-      style={{
-        background: active ? '#1C1917' : 'transparent',
-        color: active ? '#FEF3C7' : '#1C1917',
-        fontFamily: "'Kalam', sans-serif",
-      }}
-    >
-      <Icon size={14} /> {label}
-    </button>
-  );
-}
-
-function TagChip({ children, active, onClick }) {
-  return (
-    <button
-      onClick={onClick}
-      className="px-3 py-1 rounded-full border-2 border-stone-800 text-sm font-bold transition"
-      style={{
-        background: active ? '#1C1917' : '#FFFFFF',
-        color: active ? '#FEF3C7' : '#1C1917',
-        fontFamily: "'Kalam', sans-serif",
-        boxShadow: active ? 'none' : '2px 2px 0 #1c1917',
-        transform: active ? 'translate(2px, 2px)' : 'none',
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Modal({ title, children, onClose }) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(28,25,23,0.45)' }}
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="bg-amber-50 border-2 border-stone-800 rounded-xl p-5 max-w-md w-full"
-        style={{ boxShadow: '6px 6px 0 #1c1917' }}
-      >
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-2xl font-bold" style={{ fontFamily: "'Caveat', cursive" }}>
-            {title}
-          </h3>
-          <button onClick={onClose} className="text-stone-600 hover:text-stone-900">
-            <X size={20} />
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
+export default App;
