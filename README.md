@@ -1,17 +1,25 @@
 # Brainstorm Studio
 
-一个适合工作坊、需求讨论和创意会的头脑风暴板。现在这不是 Vite 默认模板，而是一页可直接使用的 React 应用。
+A brainstorming board for workshops, product discussions, and early-stage idea exploration. This is not the default Vite starter anymore. It is a working React app designed to help students turn vague thoughts into concrete project directions.
 
-## 功能
+Brainstorm Studio is especially built for college students who know they want to build something, but get stuck when they try to come up with ideas on their own. Many students do not need more motivation; they need better prompts, better structure, and a way to keep pushing past the first obvious thought. This project uses AI to help them brainstorm, branch out, and keep exploring different directions instead of staring at a blank page.
 
-- 本地自动保存到 `localStorage`
-- 跨浏览器标签页同步同一块工作板
-- 手动录入卡片，支持标签、编辑、投票、置顶、归档、删除
-- 内置「题卡 + AI 辅助」，可通过本地 Ollama 上的 Gemma 模型补 5 张热身卡
-- 按作用域、标签、关键词筛选，支持按最近更新时间、票数、标签排序
-- 导出 / 导入 JSON，方便在会前准备和不同设备之间搬运
+Instead of replacing the student's thinking, the AI works like a brainstorming partner. It can react to the notes already on the board, follow weighted ideas more closely, and generate either more focused or more divergent suggestions depending on the slider in the UI. The goal is not to output one perfect answer. The goal is to help users discover directions they would not have reached by thinking alone.
 
-## 开发
+## Features
+
+- Auto-save to `localStorage`
+- Cross-tab sync for the same board
+- Manual note creation with tags, pinning, archiving, deletion, and voting
+- Separate AI note weighting, so some notes can influence generation more than others
+- Built-in prompt cards plus local AI generation through Ollama and Gemma
+- Adjustable AI divergence, from more focused to more exploratory
+- Adjustable note font size in the board UI
+- Direct note editing without an edit mode button
+- Filter and sort by scope, tag, keyword, recency, votes, and tag
+- Export and import board data as JSON
+
+## Development
 
 ```bash
 npm install
@@ -19,16 +27,16 @@ ollama serve
 npm run dev
 ```
 
-`npm run dev` 会同时启动：
+`npm run dev` starts both:
 
-- Vite 前端开发服务器
-- 本地 Node API 层，默认监听 `http://127.0.0.1:8787`
+- The Vite frontend dev server
+- A local Node API server, listening on `http://127.0.0.1:8787` by default
 
-前端通过 `/api/ai/ideas` 调用这个 API，再由 API 请求本机的 Ollama。
+The frontend calls `/api/ai/ideas`, and that API server forwards requests to your local Ollama instance.
 
-## Ollama 配置
+## Ollama Configuration
 
-默认模型是当前机器上已存在的 `gemma4:e4b-it-q4_K_M`。如果你想改模型或地址，可以在启动前设置环境变量：
+The default model is `gemma4:e4b-it-q4_K_M`, assuming it already exists on your machine. To change the model or Ollama base URL, set environment variables before starting the app:
 
 ```bash
 export OLLAMA_MODEL=gemma4:e4b-it-q4_K_M
@@ -36,20 +44,22 @@ export OLLAMA_BASE_URL=http://127.0.0.1:11434
 npm run dev
 ```
 
-生产模式可先构建，再让本地服务同时提供静态页面和 AI API：
+## Production Mode
+
+Build the frontend first, then run the local server to serve both the static site and the AI API:
 
 ```bash
 npm run build
 npm run start
 ```
 
-## 验证
+## Verification
 
 ```bash
 npm run lint
 npm run build
 ```
 
-## 数据格式
+## Data Format
 
-工作板会自动保存到浏览器本地，键名为 `brainstorm:studio:v2`。导出的 JSON 也沿用同一结构，便于再次导入或做二次处理。
+Boards are stored in the browser and exported as JSON using the same underlying structure, so they can be imported again later or reused for further processing.
