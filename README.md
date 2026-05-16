@@ -1,10 +1,10 @@
 # Brainstorm Studio
 
-A brainstorming board for workshops, product discussions, and early-stage idea exploration. This is not the default Vite starter anymore. It is a working React app designed to help students turn vague thoughts into concrete project directions.
+A brainstorming board for workshops, product discussions, travel planning, learning plans, event preparation, everyday decisions, and early-stage idea exploration. This is not the default Vite starter anymore. It is a working React app designed to turn vague thoughts into concrete directions.
 
-Brainstorm Studio is especially built for college students who know they want to build something, but get stuck when they try to come up with ideas on their own. Many students do not need more motivation; they need better prompts, better structure, and a way to keep pushing past the first obvious thought. This project uses AI to help them brainstorm, branch out, and keep exploring different directions instead of staring at a blank page.
+Brainstorm Studio is built for people who know they need to think through a topic, but get stuck when they try to expand it on their own. Most brainstorming sessions do not need more noise; they need better prompts, better structure, and a way to keep pushing past the first obvious thought. This project uses local AI to help users branch out and keep exploring different directions instead of staring at a blank page.
 
-Instead of replacing the student's thinking, the AI works like a brainstorming partner. It can react to the notes already on the board, follow weighted ideas more closely, and generate either more focused or more divergent suggestions depending on the slider in the UI. The goal is not to output one perfect answer. The goal is to help users discover directions they would not have reached by thinking alone.
+Instead of replacing the user's thinking, the AI works like a brainstorming partner. It can react to the notes already on the board, follow weighted ideas more closely, and generate either more focused or more divergent suggestions depending on the slider in the UI. The goal is not to output one perfect answer. The goal is to help users discover directions they would not have reached by thinking alone.
 
 ## Features
 
@@ -56,6 +56,7 @@ npm run start
 ## Verification
 
 ```bash
+npm run test
 npm run lint
 npm run build
 ```

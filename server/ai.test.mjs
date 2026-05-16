@@ -1,0 +1,62 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildLensInstruction,
+  buildMessages,
+  normalizeIdeaGenerationPayload,
+  parseIdeaPayload,
+} from './ai.mjs';
+
+describe('server ai helpers', () => {
+  it('uses prompt id before title when selecting lens instructions', () => {
+    expect(buildLensInstruction({
+      language: 'en',
+      prompt: { id: 'spot-risks', title: 'What Else Is Possible' },
+    })).toContain('risks');
+  });
+
+  it('keeps title fallback for older clients', () => {
+    expect(buildLensInstruction({
+      language: 'zh',
+      prompt: { title: '马上能做什么' },
+    })).toContain('具体行动');
+  });
+
+  it('includes id-derived lens guidance in generated messages', () => {
+    const messages = buildMessages({
+      language: 'en',
+      topic: 'Weekend trip',
+      prompt: { id: 'find-resources', title: 'Custom title', prompt: 'Custom prompt' },
+      existingNotes: [{ text: 'Museum', tag: 'Idea', aiWeight: 2 }],
+    });
+
+    expect(messages[1].content).toContain('resources');
+    expect(messages[1].content).toContain('Custom title');
+  });
+
+  it('parses model JSON, markdown fences, and object candidates', () => {
+    const ideas = parseIdeaPayload('```json\n{"ideas":[{"text":"Idea 1: Book tickets"},{"idea":"Idea 2: Compare routes"},"Idea 3: Pack snacks"]}\n```');
+
+    expect(ideas).toEqual(['Book tickets', 'Compare routes', 'Pack snacks']);
+  });
+
+  it('falls back to newline parsing and deduplicates usable ideas', () => {
+    const ideas = parseIdeaPayload('1. First\n2. Second\nSecond\n3. Third');
+
+    expect(ideas).toEqual(['First', 'Second', 'Third']);
+  });
+
+  it('normalizes generation payload and removes dismissed active-note duplicates', () => {
+    const normalized = normalizeIdeaGenerationPayload({
+      language: 'en',
+      topic: 'Trip',
+      prompt: { id: 'next-actions', title: 'Next', prompt: 'Go' },
+      existingNotes: [{ text: 'Book train', tag: 'Action', aiWeight: '3' }],
+      dismissedNotes: ['book train', 'Rent bikes'],
+    });
+
+    expect(normalized.ok).toBe(true);
+    expect(normalized.value.prompt.id).toBe('next-actions');
+    expect(normalized.value.existingNotes).toEqual([{ text: 'Book train', tag: 'Action', aiWeight: 3 }]);
+    expect(normalized.value.dismissedNotes).toEqual(['Rent bikes']);
+  });
+});

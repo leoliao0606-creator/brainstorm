@@ -799,6 +799,12 @@
   transition: transform 180ms ease, box-shadow 180ms ease;
 }
 
+.note-card--generating {
+  opacity: 0;
+  animation: note-card-pop-in 420ms cubic-bezier(0.18, 0.84, 0.28, 1.08) forwards;
+  animation-delay: var(--note-enter-delay, 0ms);
+}
+
 .note-card:hover {
   transform: translateY(-4px) rotate(0deg);
   box-shadow: 0 24px 36px rgba(63,47,28,0.2);
@@ -836,6 +842,21 @@
   font-weight: 800;
 }
 
+.note-card__status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(20,31,28,0.08);
+  color: rgba(20,31,28,0.72);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .note-card__body-input {
   width: 100%;
   min-height: 124px;
@@ -851,6 +872,14 @@
   overflow: hidden;
   white-space: pre-wrap;
   font-family: inherit;
+}
+
+.note-card__body-input--loading {
+  color: rgba(20,31,28,0.55);
+  background: linear-gradient(90deg, rgba(255,255,255,0.12), rgba(255,255,255,0.34), rgba(255,255,255,0.12));
+  background-size: 220% 100%;
+  cursor: wait;
+  animation: note-card-loading 1.25s ease-in-out infinite;
 }
 
 .note-card__body-input:focus {
@@ -905,6 +934,12 @@
 
 .note-card__action-button:hover {
   transform: translateY(-1px);
+}
+
+.note-card__action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
 }
 
 .note-card__action-button:focus-visible {
@@ -1046,6 +1081,29 @@
 .note-card--4 { --note-bg: linear-gradient(180deg, #d8f0ff, #b7deff); --note-tape: rgba(59,130,246,0.26); --note-pin: #1d4ed8; }
 .note-card--5 { --note-bg: linear-gradient(180deg, #f2e6ff, #dcc6ff); --note-tape: rgba(139,92,246,0.28); --note-pin: #6d28d9; }
 .note-card--6 { --note-bg: linear-gradient(180deg, #ffe6ef, #ffc9da); --note-tape: rgba(244,63,94,0.24); --note-pin: #be123c; }
+
+@keyframes note-card-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.92) rotate(calc(var(--note-tilt) * 0.35));
+  }
+  to {
+    opacity: 1;
+    transform: rotate(var(--note-tilt));
+  }
+}
+
+@keyframes note-card-loading {
+  0% {
+    background-position: 100% 50%;
+  }
+  50% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 100% 50%;
+  }
+}
 
 /* ─── Empty state ─────────────────────────────────────────────────────────────── */
 
