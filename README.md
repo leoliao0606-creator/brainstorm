@@ -12,8 +12,10 @@ Instead of replacing the user's thinking, the AI works like a brainstorming part
 - Cross-tab sync for the same board
 - Manual note creation with tags, pinning, archiving, deletion, and voting
 - Separate AI note weighting, so some notes can influence generation more than others
-- Built-in prompt cards plus local AI generation through Ollama and Gemma
+- Built-in prompt cards plus local AI generation through Ollama
 - Adjustable AI divergence, from more focused to more exploratory
+- AI model settings in the UI for Ollama model, base URL, generation count, and output language
+- Undo for note deletion, note archiving, and import overwrite
 - Adjustable note font size in the board UI
 - Direct note editing without an edit mode button
 - Filter and sort by scope, tag, keyword, recency, votes, and tag
@@ -34,9 +36,17 @@ npm run dev
 
 The frontend calls `/api/ai/ideas`, and that API server forwards requests to your local Ollama instance.
 
+If port `8787` is already in use, start with another API port. The Vite dev proxy follows `PORT` automatically:
+
+```bash
+PORT=8788 npm run dev
+```
+
 ## Ollama Configuration
 
-The default model is `gemma4:e4b-it-q4_K_M`, assuming it already exists on your machine. To change the model or Ollama base URL, set environment variables before starting the app:
+The default model is `gemma4:e4b-it-q4_K_M`, assuming it already exists on your machine. You can change the Ollama model, base URL, generation count, and output language from the board UI through **AI Settings**.
+
+Environment variables still provide the server defaults:
 
 ```bash
 export OLLAMA_MODEL=gemma4:e4b-it-q4_K_M

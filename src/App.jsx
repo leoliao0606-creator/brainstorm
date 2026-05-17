@@ -1,5 +1,6 @@
 import {
   startTransition,
+  useCallback,
   useDeferredValue,
   useEffect,
   useEffectEvent,
@@ -13,17 +14,19 @@ import {
   Download,
   Plus,
   RefreshCw,
+  Settings,
   Sparkles,
+  Undo2,
   Upload,
   Users,
   WandSparkles,
 } from 'lucide-react';
+import { AiSettingsModal } from './components/AiSettingsModal.jsx';
 import { CollapsibleSection } from './components/CollapsibleSection.jsx';
 import { NoteCard } from './components/NoteCard.jsx';
 import { ProjectsHome } from './components/ProjectsHome.jsx';
 import { StatCard } from './components/StatCard.jsx';
 import {
-  AI_GENERATION_COUNT,
   AI_REVEAL_STEP_MS,
   DEFAULT_AI_DIVERGENCE,
   DEFAULT_NOTE_FONT_SCALE,
@@ -53,6 +56,13 @@ import {
   removeBoardById,
 } from './lib/boardStorage.js';
 import { fetchAiStatus, requestIdeaGeneration } from './lib/aiClient.js';
+import {
+  loadAiSettings,
+  normalizeAiGenerationCount,
+  normalizeAiSettings,
+  persistAiSettings,
+  resolveAiLanguagePreference,
+} from './lib/aiSettings.js';
 import { createId } from './lib/ids.js';
 import {
   getLocale,
@@ -65,6 +75,8 @@ import { formatClock } from './lib/formatters.js';
 import { downloadBoard } from './lib/ui.js';
 import './App.css';
 
+const UNDO_LIMIT = 20;
+
 function App() {
   const [language, setLanguage] = useState(loadLanguage);
   const [projects, setProjects] = useState(() => loadProjects(language));
@@ -74,7 +86,19 @@ function App() {
   const [promptIndex, setPromptIndex] = useState(0);
   const [filters, setFilters] = useState({ scope: 'active', tag: 'all', sort: 'recent', search: '' });
   const [notice, setNotice] = useState(null);
-  const [aiAssist, setAiAssist] = useState({ available: null, loading: false, model: null, reason: 'checking' });
+  const [undoStack, setUndoStack] = useState([]);
+  const [aiSettings, setAiSettings] = useState(loadAiSettings);
+  const [aiSettingsDraft, setAiSettingsDraft] = useState(aiSettings);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aiStatusLoading, setAiStatusLoading] = useState(false);
+  const [aiAssist, setAiAssist] = useState({
+    available: null,
+    loading: false,
+    model: aiSettings.ollamaModel,
+    baseUrl: aiSettings.ollamaBaseUrl,
+    installedModels: [],
+    reason: 'checking',
+  });
   const deferredSearch = useDeferredValue(filters.search);
   const importInputId = useId();
   const lastSerializedRef = useRef('');
@@ -84,7 +108,9 @@ function App() {
 
   const locale = getLocale(language);
   const text = locale.text;
-  const fallbackModelName = aiAssist.model ?? 'Gemma';
+  const fallbackModelName = aiAssist.model ?? aiSettings.ollamaModel;
+  const aiGenerationCount = normalizeAiGenerationCount(aiSettings.generationCount);
+  const aiLanguage = resolveAiLanguagePreference(aiSettings.languagePreference, language);
 
   const activeNotes = useMemo(() => (board?.notes ?? []).filter((n) => !n.archived), [board?.notes]);
   const archivedNotes = useMemo(() => (board?.notes ?? []).filter((n) => n.archived), [board?.notes]);
@@ -99,9 +125,14 @@ function App() {
   const noteFontScale = board?.noteFontScale ?? DEFAULT_NOTE_FONT_SCALE;
   const promptDeck = locale.promptDeck;
   const currentPrompt = promptDeck[promptIndex % promptDeck.length];
+  const aiPromptDeck = getLocale(aiLanguage).promptDeck;
+  const currentAiPrompt = aiPromptDeck[promptIndex % aiPromptDeck.length];
+  const canUndo = undoStack.length > 0;
 
   const aiStatusMessage = aiAssist.loading
     ? text.promptActions.generating
+    : aiStatusLoading
+      ? text.promptStatus.checking
     : aiAssist.reason === 'ready' && aiAssist.model
       ? text.promptStatus.ready(aiAssist.model)
       : aiAssist.reason === 'model_missing'
@@ -140,6 +171,24 @@ function App() {
     );
   }
 
+  function snapshotBoard(value) {
+    return value ? JSON.parse(JSON.stringify(value)) : null;
+  }
+
+  function recordUndo(label, sourceBoard = board) {
+    const snapshot = snapshotBoard(sourceBoard);
+    if (!snapshot || !activeProjectId) return;
+
+    setUndoStack((current) => [
+      { id: createId(), projectId: activeProjectId, label, board: snapshot, createdAt: Date.now() },
+      ...current,
+    ].slice(0, UNDO_LIMIT));
+  }
+
+  function clearUndoStack() {
+    setUndoStack([]);
+  }
+
   function cancelGeneration({ removePlaceholders = true, resetLoading = true } = {}) {
     const request = generationRequestRef.current;
     if (request) {
@@ -176,6 +225,7 @@ function App() {
       const nextBoard = normalizeBoard(JSON.parse(serializedBoard), language);
       lastSerializedRef.current = serializedBoard;
       setBoard(nextBoard);
+      clearUndoStack();
       setNotice({ tone: 'info', text: text.notices.sync });
     } catch {
       setNotice({ tone: 'error', text: text.notices.syncInvalid });
@@ -185,18 +235,23 @@ function App() {
   const handleBoardReset = useEffectEvent(() => {
     cancelGeneration();
     setBoard(createInitialBoard(language));
+    clearUndoStack();
     setNotice({ tone: 'info', text: text.notices.syncReset });
   });
 
-  const syncAiStatus = useEffectEvent(async () => {
+  const syncAiStatus = useCallback(async (settingsOverride) => {
+    const runtimeSettings = normalizeAiSettings(settingsOverride);
+    setAiStatusLoading(true);
     try {
-      const { ok, payload } = await fetchAiStatus();
+      const { ok, payload } = await fetchAiStatus(runtimeSettings);
       if (!ok) {
         setAiAssist((current) => ({
           ...current,
           available: false,
           loading: false,
-          model: payload.model ?? current.model,
+          model: payload.model ?? runtimeSettings.ollamaModel,
+          baseUrl: payload.baseUrl ?? runtimeSettings.ollamaBaseUrl,
+          installedModels: payload.installedModels ?? current.installedModels,
           reason: payload.reason ?? 'connection_failed',
         }));
         return;
@@ -205,13 +260,24 @@ function App() {
         ...current,
         available: payload.available,
         loading: false,
-        model: payload.model ?? current.model,
+        model: payload.model ?? runtimeSettings.ollamaModel,
+        baseUrl: payload.baseUrl ?? runtimeSettings.ollamaBaseUrl,
+        installedModels: payload.installedModels ?? [],
         reason: payload.reason ?? (payload.available ? 'ready' : 'model_missing'),
       }));
     } catch {
-      setAiAssist((current) => ({ ...current, available: false, loading: false, reason: 'connection_failed' }));
+      setAiAssist((current) => ({
+        ...current,
+        available: false,
+        loading: false,
+        model: runtimeSettings.ollamaModel,
+        baseUrl: runtimeSettings.ollamaBaseUrl,
+        reason: 'connection_failed',
+      }));
+    } finally {
+      setAiStatusLoading(false);
     }
-  });
+  }, []);
 
   useEffect(() => {
     activeProjectIdRef.current = activeProjectId;
@@ -272,9 +338,9 @@ function App() {
   }, [locale.htmlLang, text.documentDescription, text.documentTitle]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => syncAiStatus(), 0);
+    const timer = window.setTimeout(() => syncAiStatus(aiSettings), 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [aiSettings, syncAiStatus]);
 
   function handleEnterProject(projectId) {
     cancelGeneration();
@@ -285,6 +351,7 @@ function App() {
     setActiveProjectId(projectId);
     setFilters({ scope: 'active', tag: 'all', sort: 'recent', search: '' });
     setComposer({ text: '', tag: locale.tagSuggestions[0] });
+    clearUndoStack();
   }
 
   function handleCreateProject(title) {
@@ -306,6 +373,7 @@ function App() {
     setProjects(updatedProjects);
     persistProjects(updatedProjects);
     persistBoardById(projectId, JSON.stringify(newBoard));
+    clearUndoStack();
     handleEnterProject(projectId);
   }
 
@@ -321,6 +389,7 @@ function App() {
       activeProjectIdRef.current = null;
       setActiveProjectId(null);
       setBoard(null);
+      clearUndoStack();
     }
   }
 
@@ -330,6 +399,7 @@ function App() {
     setActiveProjectId(null);
     setBoard(null);
     lastSerializedRef.current = '';
+    clearUndoStack();
   }
 
   function handleLanguageChange(nextLanguage) {
@@ -356,6 +426,41 @@ function App() {
       });
     }
     setNotice({ tone: 'info', text: getLocale(normalized).text.notices.languageSwitched });
+  }
+
+  function handleOpenAiSettings() {
+    setAiSettingsDraft(aiSettings);
+    setSettingsOpen(true);
+    syncAiStatus(aiSettings);
+  }
+
+  function handleSaveAiSettings() {
+    const nextSettings = normalizeAiSettings(aiSettingsDraft);
+    persistAiSettings(nextSettings);
+    setAiSettings(nextSettings);
+    setAiSettingsDraft(nextSettings);
+    setSettingsOpen(false);
+    setNotice({ tone: 'success', text: text.notices.aiSettingsSaved });
+  }
+
+  function handleRefreshAiStatus(settingsOverride = aiSettingsDraft) {
+    const normalized = normalizeAiSettings(settingsOverride);
+    setAiSettingsDraft(normalized);
+    syncAiStatus(normalized);
+  }
+
+  function handleUndo() {
+    const [entry, ...rest] = undoStack;
+    if (!entry) {
+      setNotice({ tone: 'info', text: text.undo.empty });
+      return;
+    }
+
+    cancelGeneration();
+    activeProjectIdRef.current = entry.projectId;
+    setUndoStack(rest);
+    setBoard(entry.board);
+    setNotice({ tone: 'info', text: text.notices.undone(entry.label) });
   }
 
   function handleBoardField(field, value, fallback) {
@@ -389,10 +494,10 @@ function App() {
     const dismissedNotes = normalizeDismissedNotes(currentBoard.dismissedNotes).filter(
       (entry) => !activeFingerprints.has(normalizeNoteFingerprint(entry))
     );
-    const placeholderNotes = Array.from({ length: AI_GENERATION_COUNT }, (_, generationIndex) =>
+    const placeholderNotes = Array.from({ length: aiGenerationCount }, (_, generationIndex) =>
       createNote({
         text: text.noteCard.generating,
-        tag: currentPrompt.tag,
+        tag: currentAiPrompt.tag,
         author: text.authors.ideaEngine,
         source: 'ai',
         fallbackAuthor: locale.defaults.owner,
@@ -408,13 +513,16 @@ function App() {
 
     try {
       const { ok, payload } = await requestIdeaGeneration({
-        language,
+        ollamaBaseUrl: aiSettings.ollamaBaseUrl,
+        ollamaModel: aiSettings.ollamaModel,
+        generationCount: aiGenerationCount,
+        language: aiLanguage,
         topic: currentBoard.title,
         prompt: {
-          id: currentPrompt.id,
-          title: currentPrompt.title,
-          prompt: currentPrompt.prompt,
-          tag: currentPrompt.tag,
+          id: currentAiPrompt.id,
+          title: currentAiPrompt.title,
+          prompt: currentAiPrompt.prompt,
+          tag: currentAiPrompt.tag,
         },
         aiDivergence: currentAiDivergence,
         existingNotes: currentAiContextNotes.map((note) => ({
@@ -441,7 +549,7 @@ function App() {
 
       const generatedNotes = (payload.ideas || [])
         .filter((idea) => typeof idea === 'string' && idea.trim())
-        .slice(0, AI_GENERATION_COUNT);
+        .slice(0, aiGenerationCount);
       if (!generatedNotes.length) throw new Error(text.notices.aiRequestFailed(text.promptStatus.failed));
 
       const modelName = payload.model ?? fallbackModelName;
@@ -454,7 +562,7 @@ function App() {
             if (!current.notes.some((note) => note.id === placeholderId)) return current;
             return patchNote(current, placeholderId, () => ({
               text: idea,
-              tag: currentPrompt.tag,
+              tag: currentAiPrompt.tag,
               author: text.authors.ideaEngine,
               source: 'ai',
               generationState: 'ready',
@@ -475,8 +583,15 @@ function App() {
       queueReveal(() => {
         if (!isCurrentGeneration(token, requestProjectId)) return;
         generationRequestRef.current = null;
-        setAiAssist({ available: true, loading: false, model: modelName, reason: 'ready' });
-        setNotice({ tone: 'success', text: text.notices.generated(modelName) });
+        setAiAssist((current) => ({
+          ...current,
+          available: true,
+          loading: false,
+          model: modelName,
+          baseUrl: payload.baseUrl ?? aiSettings.ollamaBaseUrl,
+          reason: 'ready',
+        }));
+        setNotice({ tone: 'success', text: text.notices.generated(modelName, generatedNotes.length) });
       }, Math.max(generatedNotes.length - 1, 0) * AI_REVEAL_STEP_MS + 40);
     } catch (error) {
       if (controller.signal.aborted || !isCurrentGeneration(token, requestProjectId)) return;
@@ -491,6 +606,7 @@ function App() {
         available: reason === 'connection_failed' || reason === 'model_missing' ? false : current.available,
         loading: false,
         model,
+        baseUrl: aiSettings.ollamaBaseUrl,
         reason,
       }));
       setNotice({ tone: 'error', text: message });
@@ -533,7 +649,16 @@ function App() {
   }
 
   function handleArchiveToggle(noteId) {
-    setBoard((current) => patchNote(current, noteId, (note) => ({ archived: !note.archived })));
+    if (!board) return;
+    const target = board.notes.find((note) => note.id === noteId);
+    if (!target) return;
+    recordUndo(target.archived ? text.undo.restore : text.undo.archive, board);
+    setBoard(patchNote(board, noteId, (note) => ({ archived: !note.archived })));
+    setNotice({
+      tone: 'success',
+      text: target.archived ? text.notices.restored : text.notices.archived,
+      action: 'undo',
+    });
   }
 
   function handlePinToggle(noteId) {
@@ -548,8 +673,10 @@ function App() {
   }
 
   function handleDeleteNote(noteId) {
-    setBoard((current) => deleteNote(current, noteId));
-    setNotice({ tone: 'success', text: text.notices.deleted });
+    if (!board || !board.notes.some((note) => note.id === noteId)) return;
+    recordUndo(text.undo.delete, board);
+    setBoard(deleteNote(board, noteId));
+    setNotice({ tone: 'success', text: text.notices.deleted, action: 'undo' });
   }
 
   function handleExportBoard() {
@@ -564,10 +691,12 @@ function App() {
     try {
       const fileText = await file.text();
       const imported = normalizeBoard(JSON.parse(fileText), language, { dropGeneratingNotes: true });
-      cancelGeneration();
+      const previousBoard = normalizeBoard(board, language, { dropGeneratingNotes: true });
+      cancelGeneration({ removePlaceholders: false });
+      recordUndo(text.undo.import, previousBoard);
       startTransition(() => {
         setBoard(imported);
-        setNotice({ tone: 'success', text: text.notices.imported });
+        setNotice({ tone: 'success', text: text.notices.imported, action: 'undo' });
       });
     } catch {
       setNotice({ tone: 'error', text: text.notices.importFailed });
@@ -607,6 +736,25 @@ function App() {
           />
         </label>
         <div className="board-topbar__controls">
+          <button
+            className="board-topbar__back board-topbar__tool"
+            type="button"
+            onClick={handleUndo}
+            disabled={!canUndo}
+            title={text.undo.button}
+          >
+            <Undo2 size={16} />
+            <span>{text.undo.button}</span>
+          </button>
+          <button
+            className="board-topbar__back board-topbar__tool"
+            type="button"
+            onClick={handleOpenAiSettings}
+            title={text.aiSettings.button}
+          >
+            <Settings size={16} />
+            <span>{text.aiSettings.button}</span>
+          </button>
           <label className="presence-card">
             <Users size={15} />
             <span className="sr-only">{text.hostSr}</span>
@@ -633,7 +781,30 @@ function App() {
         </div>
       </header>
 
-      {notice ? <div className={`notice notice--${notice.tone}`}>{notice.text}</div> : null}
+      {notice ? (
+        <div className={`notice notice--${notice.tone}`}>
+          <span>{notice.text}</span>
+          {notice.action === 'undo' && canUndo ? (
+            <button className="notice__action" type="button" onClick={handleUndo}>
+              <Undo2 size={13} /> {text.undo.button}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {settingsOpen ? (
+        <AiSettingsModal
+          language={language}
+          draft={aiSettingsDraft}
+          installedModels={aiAssist.installedModels}
+          loading={aiStatusLoading}
+          statusMessage={aiStatusMessage}
+          onClose={() => setSettingsOpen(false)}
+          onDraftChange={setAiSettingsDraft}
+          onRefresh={handleRefreshAiStatus}
+          onSave={handleSaveAiSettings}
+        />
+      ) : null}
 
       <main className="workspace">
         <aside className="workspace__sidebar">
@@ -723,7 +894,7 @@ function App() {
                   disabled={aiAssist.loading}
                 >
                   <WandSparkles size={14} />
-                  {aiAssist.loading ? text.promptActions.generating : text.promptActions.generate}
+                  {aiAssist.loading ? text.promptActions.generating : text.promptActions.generate(aiGenerationCount)}
                 </button>
               </div>
             </div>

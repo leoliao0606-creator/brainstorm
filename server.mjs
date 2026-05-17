@@ -12,8 +12,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, 'dist');
 const HOST = process.env.HOST ?? '127.0.0.1';
 const PORT = Number(process.env.PORT ?? 8787);
-const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? 'gemma4:e4b-it-q4_K_M';
+const DEFAULT_OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434';
+const DEFAULT_OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? 'gemma4:e4b-it-q4_K_M';
 const MAX_BODY_SIZE = 1024 * 1024;
 
 const MIME_TYPES = {
@@ -60,17 +60,63 @@ async function readRequestBody(request) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-async function handleStatus(response) {
+function normalizeOllamaBaseUrl(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return DEFAULT_OLLAMA_BASE_URL;
+
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return DEFAULT_OLLAMA_BASE_URL;
+    }
+    return parsed.href.replace(/\/+$/, '');
+  } catch {
+    return DEFAULT_OLLAMA_BASE_URL;
+  }
+}
+
+function normalizeOllamaRuntimeSettings(payload = {}) {
+  return {
+    ollamaBaseUrl: normalizeOllamaBaseUrl(payload.ollamaBaseUrl ?? payload.baseUrl ?? DEFAULT_OLLAMA_BASE_URL),
+    ollamaModel: String(payload.ollamaModel ?? payload.model ?? DEFAULT_OLLAMA_MODEL).trim() || DEFAULT_OLLAMA_MODEL,
+  };
+}
+
+async function readJsonBody(request) {
+  const rawBody = await readRequestBody(request);
+  if (!rawBody.trim()) return {};
+  return JSON.parse(rawBody);
+}
+
+async function handleStatus(request, response, overrides = {}) {
+  let payload = overrides;
+
+  if (request.method === 'POST') {
+    try {
+      payload = await readJsonBody(request);
+    } catch {
+      sendJson(response, 400, {
+        ok: false,
+        reason: 'invalid_json',
+        message: 'Request body must be valid JSON.',
+      });
+      return;
+    }
+  }
+
+  const runtime = normalizeOllamaRuntimeSettings(payload);
+
   try {
     const status = await fetchOllamaStatus({
-      ollamaBaseUrl: OLLAMA_BASE_URL,
-      ollamaModel: OLLAMA_MODEL,
+      ollamaBaseUrl: runtime.ollamaBaseUrl,
+      ollamaModel: runtime.ollamaModel,
     });
     sendJson(response, 200, {
       ok: true,
       available: status.available,
       reason: status.available ? 'ready' : 'model_missing',
-      model: OLLAMA_MODEL,
+      model: runtime.ollamaModel,
+      baseUrl: runtime.ollamaBaseUrl,
       installedModels: status.installedModels,
     });
   } catch (error) {
@@ -78,7 +124,8 @@ async function handleStatus(response) {
       ok: false,
       available: false,
       reason: 'connection_failed',
-      model: OLLAMA_MODEL,
+      model: runtime.ollamaModel,
+      baseUrl: runtime.ollamaBaseUrl,
       message: error instanceof Error ? error.message : 'Unknown Ollama error.',
     });
   }
@@ -88,8 +135,7 @@ async function handleIdeaGeneration(request, response) {
   let payload;
 
   try {
-    const rawBody = await readRequestBody(request);
-    payload = JSON.parse(rawBody || '{}');
+    payload = await readJsonBody(request);
   } catch {
     sendJson(response, 400, {
       ok: false,
@@ -105,38 +151,43 @@ async function handleIdeaGeneration(request, response) {
     return;
   }
 
+  const runtime = normalizeOllamaRuntimeSettings(payload);
+
   try {
     const status = await fetchOllamaStatus({
-      ollamaBaseUrl: OLLAMA_BASE_URL,
-      ollamaModel: OLLAMA_MODEL,
+      ollamaBaseUrl: runtime.ollamaBaseUrl,
+      ollamaModel: runtime.ollamaModel,
     });
     if (!status.available) {
       sendJson(response, 503, {
         ok: false,
         available: false,
         reason: 'model_missing',
-        model: OLLAMA_MODEL,
+        model: runtime.ollamaModel,
+        baseUrl: runtime.ollamaBaseUrl,
         installedModels: status.installedModels,
-        message: `Model ${OLLAMA_MODEL} is not available in Ollama.`,
+        message: `Model ${runtime.ollamaModel} is not available in Ollama.`,
       });
       return;
     }
 
     const ideas = await generateIdeas({
-      ollamaBaseUrl: OLLAMA_BASE_URL,
-      ollamaModel: OLLAMA_MODEL,
+      ollamaBaseUrl: runtime.ollamaBaseUrl,
+      ollamaModel: runtime.ollamaModel,
       ...normalized.value,
     });
     sendJson(response, 200, {
       ok: true,
       ideas,
-      model: OLLAMA_MODEL,
+      model: runtime.ollamaModel,
+      baseUrl: runtime.ollamaBaseUrl,
     });
   } catch (error) {
     sendJson(response, 503, {
       ok: false,
       reason: 'generation_failed',
-      model: OLLAMA_MODEL,
+      model: runtime.ollamaModel,
+      baseUrl: runtime.ollamaBaseUrl,
       message: error instanceof Error ? error.message : 'Unknown generation error.',
     });
   }
@@ -212,8 +263,8 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
-  if (url.pathname === '/api/ai/status' && request.method === 'GET') {
-    await handleStatus(response);
+  if (url.pathname === '/api/ai/status' && (request.method === 'GET' || request.method === 'POST')) {
+    await handleStatus(request, response, Object.fromEntries(url.searchParams));
     return;
   }
 
@@ -237,6 +288,6 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(PORT, HOST, () => {
   console.log(
-    `Brainstorm server listening on http://${HOST}:${PORT} using Ollama model ${OLLAMA_MODEL}`
+    `Brainstorm server listening on http://${HOST}:${PORT} using default Ollama model ${DEFAULT_OLLAMA_MODEL}`
   );
 });

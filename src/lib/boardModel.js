@@ -6,7 +6,6 @@ export const DEFAULT_NOTE_FONT_SCALE = 1.12;
 export const MAX_AI_WEIGHT = 3;
 export const MAX_DISMISSED_NOTES = 24;
 export const BOARD_VERSION = 3;
-export const AI_GENERATION_COUNT = 5;
 export const AI_REVEAL_STEP_MS = 180;
 
 const AI_AUTHOR_ALIASES = new Set(['AI 灵感', 'AI Ideas']);

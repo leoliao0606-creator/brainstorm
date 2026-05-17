@@ -27,8 +27,10 @@ describe('server ai helpers', () => {
       topic: 'Weekend trip',
       prompt: { id: 'find-resources', title: 'Custom title', prompt: 'Custom prompt' },
       existingNotes: [{ text: 'Museum', tag: 'Idea', aiWeight: 2 }],
+      generationCount: 2,
     });
 
+    expect(messages[1].content).toContain('Generate 2');
     expect(messages[1].content).toContain('resources');
     expect(messages[1].content).toContain('Custom title');
   });
@@ -45,6 +47,12 @@ describe('server ai helpers', () => {
     expect(ideas).toEqual(['First', 'Second', 'Third']);
   });
 
+  it('allows smaller configured generation counts', () => {
+    const ideas = parseIdeaPayload('{"ideas":["First","Second","Third"]}', { generationCount: 2 });
+
+    expect(ideas).toEqual(['First', 'Second']);
+  });
+
   it('normalizes generation payload and removes dismissed active-note duplicates', () => {
     const normalized = normalizeIdeaGenerationPayload({
       language: 'en',
@@ -56,7 +64,20 @@ describe('server ai helpers', () => {
 
     expect(normalized.ok).toBe(true);
     expect(normalized.value.prompt.id).toBe('next-actions');
+    expect(normalized.value.generationCount).toBe(5);
     expect(normalized.value.existingNotes).toEqual([{ text: 'Book train', tag: 'Action', aiWeight: 3 }]);
     expect(normalized.value.dismissedNotes).toEqual(['Rent bikes']);
+  });
+
+  it('normalizes custom generation counts', () => {
+    const normalized = normalizeIdeaGenerationPayload({
+      language: 'en',
+      topic: 'Trip',
+      prompt: { id: 'next-actions', title: 'Next', prompt: 'Go' },
+      generationCount: 99,
+    });
+
+    expect(normalized.ok).toBe(true);
+    expect(normalized.value.generationCount).toBe(10);
   });
 });

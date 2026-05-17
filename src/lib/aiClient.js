@@ -1,5 +1,10 @@
-export async function fetchAiStatus({ signal } = {}) {
-  const response = await fetch('/api/ai/status', { signal });
+export async function fetchAiStatus(settings = {}, { signal } = {}) {
+  const response = await fetch('/api/ai/status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+    body: JSON.stringify(settings),
+  });
   const payload = await response.json().catch(() => ({}));
   return { ok: response.ok, payload };
 }
