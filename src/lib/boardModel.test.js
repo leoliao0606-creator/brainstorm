@@ -13,6 +13,7 @@ describe('boardModel', () => {
       title: '',
       userName: 'Alice',
       aiDivergence: 500,
+      aiSpecificity: -20,
       noteFontScale: 4,
       notes: [
         { text: '  Keep this idea ', tags: ['Idea'], votes: -2, createdAt: 10 },
@@ -24,6 +25,7 @@ describe('boardModel', () => {
     expect(board.title).toBe('New Brainstorm Topic');
     expect(board.owner).toBe('Alice');
     expect(board.aiDivergence).toBe(100);
+    expect(board.aiSpecificity).toBe(0);
     expect(board.noteFontScale).toBe(1.45);
     expect(board.notes).toHaveLength(1);
     expect(board.notes[0]).toMatchObject({ text: 'Keep this idea', tag: 'Idea', votes: 0 });

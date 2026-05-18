@@ -2,6 +2,7 @@ import { createId } from './ids.js';
 import { DEFAULT_LANGUAGE, getLocale } from './locale.js';
 
 export const DEFAULT_AI_DIVERGENCE = 55;
+export const DEFAULT_AI_SPECIFICITY = 70;
 export const DEFAULT_NOTE_FONT_SCALE = 1.12;
 export const MAX_AI_WEIGHT = 3;
 export const MAX_DISMISSED_NOTES = 24;
@@ -28,6 +29,12 @@ export function normalizeAiWeight(value) {
 export function normalizeAiDivergence(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return DEFAULT_AI_DIVERGENCE;
+  return Math.max(0, Math.min(100, Math.round(parsed)));
+}
+
+export function normalizeAiSpecificity(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_AI_SPECIFICITY;
   return Math.max(0, Math.min(100, Math.round(parsed)));
 }
 
@@ -181,6 +188,7 @@ export function normalizeBoard(rawBoard, language = DEFAULT_LANGUAGE, options = 
     title: normalizeText(rawBoard?.title, locale.defaults.title).trim() || locale.defaults.title,
     owner: normalizeText(rawBoard?.owner ?? rawBoard?.userName, locale.defaults.owner).trim() || locale.defaults.owner,
     aiDivergence: normalizeAiDivergence(rawBoard?.aiDivergence),
+    aiSpecificity: normalizeAiSpecificity(rawBoard?.aiSpecificity),
     noteFontScale: normalizeNoteFontScale(rawBoard?.noteFontScale),
     dismissedNotes: normalizeDismissedNotes(rawBoard?.dismissedNotes),
     notes,
@@ -198,6 +206,7 @@ export function createInitialBoard(language = DEFAULT_LANGUAGE) {
     title: locale.defaults.title,
     owner: locale.defaults.owner,
     aiDivergence: DEFAULT_AI_DIVERGENCE,
+    aiSpecificity: DEFAULT_AI_SPECIFICITY,
     noteFontScale: DEFAULT_NOTE_FONT_SCALE,
     dismissedNotes: [],
     notes: [],

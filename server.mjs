@@ -3,9 +3,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile, stat } from 'node:fs/promises';
 import {
+  buildOllamaChatPayload,
   fetchOllamaStatus,
   generateIdeas,
   normalizeIdeaGenerationPayload,
+  parseIdeaPayload,
 } from './server/ai.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -193,6 +195,164 @@ async function handleIdeaGeneration(request, response) {
   }
 }
 
+function writeStreamEvent(response, payload) {
+  if (response.writableEnded || response.destroyed) return;
+  response.write(`${JSON.stringify(payload)}\n`);
+}
+
+async function handleIdeaGenerationStream(request, response) {
+  let payload;
+
+  try {
+    payload = await readJsonBody(request);
+  } catch {
+    sendJson(response, 400, {
+      ok: false,
+      reason: 'invalid_json',
+      message: 'Request body must be valid JSON.',
+    });
+    return;
+  }
+
+  const normalized = normalizeIdeaGenerationPayload(payload);
+  if (!normalized.ok) {
+    sendJson(response, normalized.response.statusCode, normalized.response.payload);
+    return;
+  }
+
+  const runtime = normalizeOllamaRuntimeSettings(payload);
+
+  try {
+    const status = await fetchOllamaStatus({
+      ollamaBaseUrl: runtime.ollamaBaseUrl,
+      ollamaModel: runtime.ollamaModel,
+    });
+
+    if (!status.available) {
+      sendJson(response, 503, {
+        ok: false,
+        available: false,
+        reason: 'model_missing',
+        model: runtime.ollamaModel,
+        baseUrl: runtime.ollamaBaseUrl,
+        installedModels: status.installedModels,
+        message: `Model ${runtime.ollamaModel} is not available in Ollama.`,
+      });
+      return;
+    }
+
+    const upstreamController = new AbortController();
+    let clientClosed = false;
+    response.on('close', () => {
+      if (!response.writableEnded) {
+        clientClosed = true;
+        upstreamController.abort();
+      }
+    });
+
+    const upstreamResponse = await fetch(`${runtime.ollamaBaseUrl}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      signal: upstreamController.signal,
+      body: JSON.stringify(buildOllamaChatPayload({
+        ollamaModel: runtime.ollamaModel,
+        ...normalized.value,
+        stream: true,
+      })),
+    });
+
+    if (!upstreamResponse.ok) {
+      const detail = await upstreamResponse.text();
+      throw new Error(detail || `Ollama responded with ${upstreamResponse.status}.`);
+    }
+
+    response.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Accel-Buffering': 'no',
+    });
+    writeStreamEvent(response, {
+      type: 'meta',
+      model: runtime.ollamaModel,
+      baseUrl: runtime.ollamaBaseUrl,
+    });
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let rawContent = '';
+
+    for await (const chunk of upstreamResponse.body) {
+      if (clientClosed) return;
+      buffer += decoder.decode(chunk, { stream: true });
+      let lineBreakIndex = buffer.indexOf('\n');
+
+      while (lineBreakIndex !== -1) {
+        const line = buffer.slice(0, lineBreakIndex).trim();
+        buffer = buffer.slice(lineBreakIndex + 1);
+        lineBreakIndex = buffer.indexOf('\n');
+        if (!line) continue;
+
+        const event = JSON.parse(line);
+        const content = String(event?.message?.content ?? '');
+        if (content) {
+          rawContent += content;
+          writeStreamEvent(response, { type: 'chunk', content });
+        }
+
+        if (event?.done) {
+          const ideas = parseIdeaPayload(rawContent, { generationCount: normalized.value.generationCount });
+          writeStreamEvent(response, {
+            type: 'done',
+            ideas,
+            rawContent,
+            model: runtime.ollamaModel,
+            baseUrl: runtime.ollamaBaseUrl,
+          });
+          response.end();
+          return;
+        }
+      }
+    }
+
+    const trailingLine = buffer.trim();
+    if (trailingLine) {
+      const event = JSON.parse(trailingLine);
+      const content = String(event?.message?.content ?? '');
+      if (content) rawContent += content;
+    }
+
+    const ideas = parseIdeaPayload(rawContent, { generationCount: normalized.value.generationCount });
+    writeStreamEvent(response, {
+      type: 'done',
+      ideas,
+      rawContent,
+      model: runtime.ollamaModel,
+      baseUrl: runtime.ollamaBaseUrl,
+    });
+    response.end();
+  } catch (error) {
+    if (error?.name === 'AbortError') return;
+
+    const payload = {
+      ok: false,
+      reason: 'generation_failed',
+      model: runtime.ollamaModel,
+      baseUrl: runtime.ollamaBaseUrl,
+      message: error instanceof Error ? error.message : 'Unknown generation error.',
+    };
+
+    if (response.headersSent) {
+      writeStreamEvent(response, { type: 'error', ...payload });
+      response.end();
+      return;
+    }
+
+    sendJson(response, 503, payload);
+  }
+}
+
 function resolveStaticAssetPath(requestPath) {
   const cleanPath = requestPath === '/' ? '/index.html' : requestPath;
   let decodedPath;
@@ -265,6 +425,11 @@ const server = http.createServer(async (request, response) => {
 
   if (url.pathname === '/api/ai/status' && (request.method === 'GET' || request.method === 'POST')) {
     await handleStatus(request, response, Object.fromEntries(url.searchParams));
+    return;
+  }
+
+  if (url.pathname === '/api/ai/ideas/stream' && request.method === 'POST') {
+    await handleIdeaGenerationStream(request, response);
     return;
   }
 

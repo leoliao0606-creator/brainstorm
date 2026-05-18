@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildLensInstruction,
   buildMessages,
+  buildOllamaChatPayload,
   normalizeIdeaGenerationPayload,
   parseIdeaPayload,
 } from './ai.mjs';
@@ -27,12 +28,30 @@ describe('server ai helpers', () => {
       topic: 'Weekend trip',
       prompt: { id: 'find-resources', title: 'Custom title', prompt: 'Custom prompt' },
       existingNotes: [{ text: 'Museum', tag: 'Idea', aiWeight: 2 }],
+      aiSpecificity: 88,
       generationCount: 2,
     });
 
     expect(messages[1].content).toContain('Generate 2');
     expect(messages[1].content).toContain('resources');
+    expect(messages[1].content).toContain('Specificity is 88/100');
     expect(messages[1].content).toContain('Custom title');
+  });
+
+  it('builds stream and non-stream Ollama chat payloads from the same prompt logic', () => {
+    const payload = buildOllamaChatPayload({
+      ollamaModel: 'test-model',
+      language: 'en',
+      topic: 'Workshop',
+      prompt: { id: 'explore-options', title: 'Explore', prompt: 'Explore' },
+      generationCount: 2,
+      stream: true,
+    });
+
+    expect(payload.model).toBe('test-model');
+    expect(payload.stream).toBe(true);
+    expect(payload.format).toBe('json');
+    expect(payload.messages[1].content).toContain('Generate 2');
   });
 
   it('parses model JSON, markdown fences, and object candidates', () => {
@@ -58,6 +77,7 @@ describe('server ai helpers', () => {
       language: 'en',
       topic: 'Trip',
       prompt: { id: 'next-actions', title: 'Next', prompt: 'Go' },
+      aiSpecificity: 101,
       existingNotes: [{ text: 'Book train', tag: 'Action', aiWeight: '3' }],
       dismissedNotes: ['book train', 'Rent bikes'],
     });
@@ -65,6 +85,7 @@ describe('server ai helpers', () => {
     expect(normalized.ok).toBe(true);
     expect(normalized.value.prompt.id).toBe('next-actions');
     expect(normalized.value.generationCount).toBe(5);
+    expect(normalized.value.aiSpecificity).toBe(100);
     expect(normalized.value.existingNotes).toEqual([{ text: 'Book train', tag: 'Action', aiWeight: 3 }]);
     expect(normalized.value.dismissedNotes).toEqual(['Rent bikes']);
   });

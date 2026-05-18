@@ -12,10 +12,12 @@ import {
 import {
   ArrowLeft,
   Download,
+  MessageSquareText,
   Plus,
   RefreshCw,
   Settings,
   Sparkles,
+  Square,
   Undo2,
   Upload,
   Users,
@@ -29,6 +31,7 @@ import { StatCard } from './components/StatCard.jsx';
 import {
   AI_REVEAL_STEP_MS,
   DEFAULT_AI_DIVERGENCE,
+  DEFAULT_AI_SPECIFICITY,
   DEFAULT_NOTE_FONT_SCALE,
   appendNotes,
   computeTopTag,
@@ -36,6 +39,7 @@ import {
   createNote,
   deleteNote,
   normalizeAiDivergence,
+  normalizeAiSpecificity,
   normalizeAiWeight,
   normalizeBoard,
   normalizeDismissedNotes,
@@ -55,7 +59,7 @@ import {
   persistProjects,
   removeBoardById,
 } from './lib/boardStorage.js';
-import { fetchAiStatus, requestIdeaGeneration } from './lib/aiClient.js';
+import { fetchAiStatus, requestIdeaGenerationStream } from './lib/aiClient.js';
 import {
   loadAiSettings,
   normalizeAiGenerationCount,
@@ -91,6 +95,8 @@ function App() {
   const [aiSettingsDraft, setAiSettingsDraft] = useState(aiSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aiStatusLoading, setAiStatusLoading] = useState(false);
+  const [aiStreamVisible, setAiStreamVisible] = useState(false);
+  const [aiStreamText, setAiStreamText] = useState('');
   const [aiAssist, setAiAssist] = useState({
     available: null,
     loading: false,
@@ -122,6 +128,7 @@ function App() {
     return tag || text.topTagFallback;
   })();
   const aiDivergence = board?.aiDivergence ?? DEFAULT_AI_DIVERGENCE;
+  const aiSpecificity = board?.aiSpecificity ?? DEFAULT_AI_SPECIFICITY;
   const noteFontScale = board?.noteFontScale ?? DEFAULT_NOTE_FONT_SCALE;
   const promptDeck = locale.promptDeck;
   const currentPrompt = promptDeck[promptIndex % promptDeck.length];
@@ -206,6 +213,13 @@ function App() {
     if (resetLoading) {
       setAiAssist((current) => ({ ...current, loading: false }));
     }
+  }
+
+  function handleStopGeneration() {
+    if (!generationRequestRef.current) return;
+    cancelGeneration();
+    setAiStreamText((current) => current ? `${current}\n\n${text.promptStatus.outputStopped}` : text.promptStatus.outputStopped);
+    setNotice({ tone: 'info', text: text.notices.aiGenerationStopped });
   }
 
   const visibleNotes = useMemo(() => {
@@ -364,6 +378,7 @@ function App() {
       title,
       owner: locale.defaults.owner,
       aiDivergence: DEFAULT_AI_DIVERGENCE,
+      aiSpecificity: DEFAULT_AI_SPECIFICITY,
       noteFontScale: DEFAULT_NOTE_FONT_SCALE,
       dismissedNotes: [],
       notes: [],
@@ -486,6 +501,7 @@ function App() {
     const token = Symbol('ai-generation');
     const controller = new AbortController();
     const currentAiDivergence = currentBoard.aiDivergence ?? DEFAULT_AI_DIVERGENCE;
+    const currentAiSpecificity = currentBoard.aiSpecificity ?? DEFAULT_AI_SPECIFICITY;
     const currentActiveNotes = currentBoard.notes.filter((note) => !note.archived);
     const currentAiContextNotes = currentAiDivergence >= 100 ? [] : selectAiContextNotes(currentActiveNotes);
     const activeFingerprints = new Set(
@@ -510,9 +526,11 @@ function App() {
 
     setBoard((current) => (current ? appendNotes(current, placeholderNotes) : current));
     setAiAssist((current) => ({ ...current, loading: true, reason: current.available === null ? 'checking' : current.reason }));
+    setAiStreamVisible(true);
+    setAiStreamText('');
 
     try {
-      const { ok, payload } = await requestIdeaGeneration({
+      const { ok, payload } = await requestIdeaGenerationStream({
         ollamaBaseUrl: aiSettings.ollamaBaseUrl,
         ollamaModel: aiSettings.ollamaModel,
         generationCount: aiGenerationCount,
@@ -525,13 +543,22 @@ function App() {
           tag: currentAiPrompt.tag,
         },
         aiDivergence: currentAiDivergence,
+        aiSpecificity: currentAiSpecificity,
         existingNotes: currentAiContextNotes.map((note) => ({
           text: note.text,
           tag: note.tag,
           aiWeight: note.aiWeight,
         })),
         dismissedNotes,
-      }, { signal: controller.signal });
+      }, {
+        signal: controller.signal,
+        onEvent: (event) => {
+          if (!isCurrentGeneration(token, requestProjectId)) return;
+          if (event.type === 'chunk' && event.content) {
+            setAiStreamText((current) => `${current}${event.content}`);
+          }
+        },
+      });
 
       if (!isCurrentGeneration(token, requestProjectId)) return;
       if (!ok) {
@@ -550,6 +577,9 @@ function App() {
       const generatedNotes = (payload.ideas || [])
         .filter((idea) => typeof idea === 'string' && idea.trim())
         .slice(0, aiGenerationCount);
+      if (payload.rawContent) {
+        setAiStreamText(payload.rawContent);
+      }
       if (!generatedNotes.length) throw new Error(text.notices.aiRequestFailed(text.promptStatus.failed));
 
       const modelName = payload.model ?? fallbackModelName;
@@ -638,6 +668,13 @@ function App() {
     setBoard((current) => {
       if (!current) return current;
       return touchBoard({ ...current, aiDivergence: normalizeAiDivergence(nextValue) });
+    });
+  }
+
+  function handleAiSpecificityChange(nextValue) {
+    setBoard((current) => {
+      if (!current) return current;
+      return touchBoard({ ...current, aiSpecificity: normalizeAiSpecificity(nextValue) });
     });
   }
 
@@ -861,6 +898,17 @@ function App() {
                 <span className="prompt-card__status-label">{text.promptStatus.label}</span>
                 <span>{aiStatusMessage}</span>
               </div>
+              {aiStreamVisible ? (
+                <div className="ai-stream-panel">
+                  <div className="ai-stream-panel__header">
+                    <span>{text.promptStatus.outputLabel}</span>
+                    <strong>{aiAssist.loading ? text.promptStatus.outputStreaming : text.promptStatus.outputReady}</strong>
+                  </div>
+                  <pre className="ai-stream-panel__body">
+                    {aiStreamText || text.promptStatus.outputWaiting}
+                  </pre>
+                </div>
+              ) : null}
               <label className="field field--range ai-panel__range">
                 <span className="field__label">{text.promptControls.divergenceLabel}</span>
                 <div className="range-control">
@@ -880,12 +928,35 @@ function App() {
                   <span>{text.promptControls.wild}</span>
                 </div>
               </label>
+              <label className="field field--range ai-panel__range">
+                <span className="field__label">{text.promptControls.specificityLabel}</span>
+                <div className="range-control">
+                  <input
+                    className="range-control__input"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={aiSpecificity}
+                    onChange={(e) => handleAiSpecificityChange(Number(e.target.value))}
+                  />
+                  <span className="range-control__value">{aiSpecificity}%</span>
+                </div>
+                <div className="range-control__legend">
+                  <span>{text.promptControls.broad}</span>
+                  <span>{text.promptControls.concrete}</span>
+                </div>
+              </label>
               <div className="stack">
                 <button className="button button--ghost button--full" type="button" onClick={() => setPromptIndex((current) => (current + 1) % promptDeck.length)}>
                   <RefreshCw size={14} /> {text.promptActions.rotate}
                 </button>
                 <button className="button button--secondary button--full" type="button" onClick={handlePinPrompt}>
                   <Plus size={14} /> {text.promptActions.pin}
+                </button>
+                <button className="button button--ghost button--full" type="button" onClick={() => setAiStreamVisible((visible) => !visible)}>
+                  <MessageSquareText size={14} />
+                  {aiStreamVisible ? text.promptActions.hideOutput : text.promptActions.showOutput}
                 </button>
                 <button
                   className="button button--accent button--full"
@@ -896,6 +967,11 @@ function App() {
                   <WandSparkles size={14} />
                   {aiAssist.loading ? text.promptActions.generating : text.promptActions.generate(aiGenerationCount)}
                 </button>
+                {aiAssist.loading ? (
+                  <button className="button button--danger button--full" type="button" onClick={handleStopGeneration}>
+                    <Square size={13} /> {text.promptActions.stop}
+                  </button>
+                ) : null}
               </div>
             </div>
           </CollapsibleSection>

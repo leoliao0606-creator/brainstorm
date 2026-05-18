@@ -1,4 +1,5 @@
-import { RefreshCw, Save, X } from 'lucide-react';
+import { useState } from 'react';
+import { ChevronDown, RefreshCw, Save, X } from 'lucide-react';
 import {
   MAX_AI_GENERATION_COUNT,
   MIN_AI_GENERATION_COUNT,
@@ -18,9 +19,15 @@ export function AiSettingsModal({
 }) {
   const copy = getLocale(language).text.aiSettings;
   const modelOptions = [...new Set([draft.ollamaModel, ...installedModels].filter(Boolean))];
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
 
   function updateDraft(field, value) {
     onDraftChange({ ...draft, [field]: value });
+  }
+
+  function selectModel(model) {
+    updateDraft('ollamaModel', model);
+    setModelMenuOpen(false);
   }
 
   return (
@@ -54,21 +61,54 @@ export function AiSettingsModal({
             onSave();
           }}
         >
-          <label className="field">
+          <div
+            className="field model-picker"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) {
+                setModelMenuOpen(false);
+              }
+            }}
+          >
             <span className="field__label">{copy.modelLabel}</span>
-            <input
-              className="field__control"
-              list="ollama-model-options"
-              value={draft.ollamaModel}
-              onChange={(event) => updateDraft('ollamaModel', event.target.value)}
-              placeholder={copy.modelPlaceholder}
-            />
-            <datalist id="ollama-model-options">
-              {modelOptions.map((model) => (
-                <option key={model} value={model} />
-              ))}
-            </datalist>
-          </label>
+            <div className="model-picker__control">
+              <input
+                className="field__control model-picker__input"
+                value={draft.ollamaModel}
+                onFocus={() => setModelMenuOpen(true)}
+                onChange={(event) => {
+                  updateDraft('ollamaModel', event.target.value);
+                  setModelMenuOpen(true);
+                }}
+                placeholder={copy.modelPlaceholder}
+              />
+              <button
+                className="model-picker__toggle"
+                type="button"
+                onClick={() => setModelMenuOpen((open) => !open)}
+                aria-label={copy.modelLabel}
+                title={copy.modelLabel}
+              >
+                <ChevronDown size={17} />
+              </button>
+            </div>
+            {modelMenuOpen && modelOptions.length ? (
+              <div className="model-picker__menu" role="listbox" aria-label={copy.modelLabel}>
+                {modelOptions.map((model) => (
+                  <button
+                    key={model}
+                    className={`model-picker__option${draft.ollamaModel === model ? ' model-picker__option--active' : ''}`}
+                    type="button"
+                    role="option"
+                    aria-selected={draft.ollamaModel === model}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => selectModel(model)}
+                  >
+                    {model}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
 
           <label className="field">
             <span className="field__label">{copy.baseUrlLabel}</span>

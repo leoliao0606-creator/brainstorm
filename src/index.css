@@ -5,15 +5,35 @@
   font-family: 'Manrope', 'Segoe UI', sans-serif;
   line-height: 1.5;
   font-weight: 500;
-  color: #17211c;
+  color: #18211f;
   background:
-    radial-gradient(circle at top left, rgba(20, 184, 166, 0.22), transparent 28%),
-    radial-gradient(circle at top right, rgba(249, 115, 22, 0.18), transparent 22%),
-    linear-gradient(180deg, #f4eee2, #efe6d7);
-  --ink: #17211c;
-  --muted: #5e665f;
-  --accent: #0f766e;
-  --accent-strong: #115e59;
+    linear-gradient(90deg, rgba(23, 52, 47, 0.055) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(23, 52, 47, 0.045) 1px, transparent 1px),
+    linear-gradient(145deg, #eef4f1 0%, #f7f3ea 48%, #eaf1f4 100%);
+  background-size: 28px 28px, 28px 28px, auto;
+  --ink: #18211f;
+  --ink-soft: #33413d;
+  --muted: #65716c;
+  --quiet: #84908a;
+  --paper: #f7f5ed;
+  --surface: #fffdfa;
+  --surface-strong: #ffffff;
+  --surface-cool: #edf5f2;
+  --panel: #1f302d;
+  --panel-2: #263a36;
+  --panel-ink: #f7f6ed;
+  --line: rgba(24, 33, 31, 0.12);
+  --line-strong: rgba(24, 33, 31, 0.2);
+  --accent: #0b7a71;
+  --accent-strong: #075f59;
+  --accent-warm: #bd5b3a;
+  --accent-blue: #2e5f91;
+  --accent-gold: #d5a72f;
+  --danger: #a63434;
+  --shadow-sm: 0 6px 16px rgba(24, 33, 31, 0.08);
+  --shadow-md: 0 16px 36px rgba(24, 33, 31, 0.12);
+  --shadow-lg: 0 26px 70px rgba(24, 33, 31, 0.18);
+  --radius: 8px;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -43,6 +63,11 @@ select {
   font: inherit;
 }
 
+body,
+body * {
+  letter-spacing: 0 !important;
+}
+
 button,
 input,
 textarea,
@@ -61,7 +86,8 @@ button {
 }
 
 ::selection {
-  background: rgba(15, 118, 110, 0.18);
+  color: #0e1917;
+  background: rgba(213, 167, 47, 0.32);
 }
 
 #root {

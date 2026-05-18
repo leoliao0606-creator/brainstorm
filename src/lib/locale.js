@@ -99,8 +99,11 @@ const LOCALE_CONFIG = {
       promptActions: {
         rotate: '换一个角度',
         pin: '贴到墙上',
+        showOutput: '实时输出',
+        hideOutput: '隐藏输出',
         generate: (count) => `让 AI 补 ${count} 条`,
         generating: 'AI 思考中...',
+        stop: '停止生成',
       },
       promptStatus: {
         label: 'AI 辅助',
@@ -109,11 +112,19 @@ const LOCALE_CONFIG = {
         modelMissing: (model) => `Ollama 已启动，但没有找到 ${model}`,
         offline: '本地 Ollama 当前不可达',
         failed: 'AI 生成失败，请稍后再试',
+        outputLabel: '实时输出',
+        outputStreaming: '接收中',
+        outputReady: '已就绪',
+        outputWaiting: '等待 AI 输出...',
+        outputStopped: '[已停止当前 AI 生成]',
       },
       promptControls: {
         divergenceLabel: '发散程度',
+        specificityLabel: '具体程度',
         focused: '更收敛',
         wild: '更发散',
+        broad: '更概括',
+        concrete: '更具体',
       },
       quickPanel: {
         eyebrow: '快速记录',
@@ -191,6 +202,7 @@ const LOCALE_CONFIG = {
         aiConnectionFailed: '连接本地 Ollama 失败，请确认 `ollama serve` 正在运行。',
         aiModelMissing: (model) => `本地 Ollama 已连接，但没有找到模型 ${model}。`,
         aiRequestFailed: (message) => `AI 生成失败：${message}`,
+        aiGenerationStopped: '已停止当前 AI 生成。',
         undone: (label) => `已撤销：${label}。`,
       },
       home: {
@@ -303,8 +315,11 @@ const LOCALE_CONFIG = {
       promptActions: {
         rotate: 'Next angle',
         pin: 'Pin to wall',
+        showOutput: 'Live output',
+        hideOutput: 'Hide output',
         generate: (count) => `Ask AI for ${count} more`,
         generating: 'AI is thinking...',
+        stop: 'Stop generation',
       },
       promptStatus: {
         label: 'AI Assist',
@@ -313,11 +328,19 @@ const LOCALE_CONFIG = {
         modelMissing: (model) => `Ollama is running but ${model} is missing`,
         offline: 'Local Ollama is unreachable',
         failed: 'AI generation failed. Try again.',
+        outputLabel: 'Live output',
+        outputStreaming: 'Streaming',
+        outputReady: 'Ready',
+        outputWaiting: 'Waiting for AI output...',
+        outputStopped: '[Stopped current AI generation]',
       },
       promptControls: {
         divergenceLabel: 'Divergence',
+        specificityLabel: 'Specificity',
         focused: 'Focused',
         wild: 'Wilder',
+        broad: 'Broader',
+        concrete: 'More concrete',
       },
       quickPanel: {
         eyebrow: 'Quick Capture',
@@ -395,6 +418,7 @@ const LOCALE_CONFIG = {
         aiConnectionFailed: 'Could not reach local Ollama. Make sure `ollama serve` is running.',
         aiModelMissing: (model) => `Local Ollama is up, but model ${model} is missing.`,
         aiRequestFailed: (message) => `AI generation failed: ${message}`,
+        aiGenerationStopped: 'Stopped the current AI generation.',
         undone: (label) => `Undone: ${label}.`,
       },
       home: {
