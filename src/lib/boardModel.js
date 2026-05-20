@@ -8,6 +8,13 @@ export const MAX_AI_WEIGHT = 3;
 export const MAX_DISMISSED_NOTES = 24;
 export const BOARD_VERSION = 3;
 export const AI_REVEAL_STEP_MS = 180;
+export const CANVAS_NOTE_STEP_X = 322;
+export const CANVAS_NOTE_STEP_Y = 334;
+export const CANVAS_COLUMN_COUNT = 4;
+export const CANVAS_POSITION_PADDING = 44;
+export const CANVAS_POSITION_MIN = -50000;
+export const CANVAS_POSITION_MAX = 50000;
+export const NOTE_COLOR_OPTIONS = ['yellow', 'mint', 'coral', 'blue', 'lavender', 'rose'];
 
 const AI_AUTHOR_ALIASES = new Set(['AI 灵感', 'AI Ideas']);
 const PROMPT_AUTHOR_ALIASES = new Set(['引导提示', 'Prompt']);
@@ -42,6 +49,38 @@ export function normalizeNoteFontScale(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return DEFAULT_NOTE_FONT_SCALE;
   return Math.max(0.9, Math.min(1.45, Number(parsed.toFixed(2))));
+}
+
+export function getDefaultNotePosition(index = 0) {
+  const safeIndex = Math.max(0, Math.round(Number(index) || 0));
+  const column = safeIndex % CANVAS_COLUMN_COUNT;
+  const row = Math.floor(safeIndex / CANVAS_COLUMN_COUNT);
+  const rowOffset = row % 2 ? CANVAS_NOTE_STEP_X * 0.18 : 0;
+
+  return {
+    x: Math.round(CANVAS_POSITION_PADDING + column * CANVAS_NOTE_STEP_X + rowOffset),
+    y: Math.round(CANVAS_POSITION_PADDING + row * CANVAS_NOTE_STEP_Y),
+  };
+}
+
+export function normalizeNotePosition(value, fallback = getDefaultNotePosition(0)) {
+  const fallbackPosition = fallback && typeof fallback === 'object' ? fallback : getDefaultNotePosition(0);
+  const rawX = Number(value?.x);
+  const rawY = Number(value?.y);
+  const fallbackX = Number(fallbackPosition.x);
+  const fallbackY = Number(fallbackPosition.y);
+  const x = Number.isFinite(rawX) ? rawX : Number.isFinite(fallbackX) ? fallbackX : 0;
+  const y = Number.isFinite(rawY) ? rawY : Number.isFinite(fallbackY) ? fallbackY : 0;
+
+  return {
+    x: Math.max(CANVAS_POSITION_MIN, Math.min(CANVAS_POSITION_MAX, Math.round(x))),
+    y: Math.max(CANVAS_POSITION_MIN, Math.min(CANVAS_POSITION_MAX, Math.round(y))),
+  };
+}
+
+export function normalizeNoteColor(value) {
+  const color = String(value ?? '').trim();
+  return NOTE_COLOR_OPTIONS.includes(color) ? color : '';
 }
 
 export function normalizeNoteSource(source) {
@@ -89,6 +128,8 @@ export function createNote({
   fallbackAuthor,
   generationState = 'ready',
   generationIndex = 0,
+  position,
+  color = '',
 }) {
   const stamp = Date.now();
   return {
@@ -103,6 +144,8 @@ export function createNote({
     pinned,
     generationState: normalizeGenerationState(generationState),
     generationIndex: Math.max(0, Math.round(Number(generationIndex) || 0)),
+    position: normalizeNotePosition(position, getDefaultNotePosition(generationIndex)),
+    color: normalizeNoteColor(color),
     createdAt: stamp,
     updatedAt: stamp,
   };
@@ -168,6 +211,8 @@ export function normalizeNote(rawNote, index, language) {
     pinned: Boolean(rawNote?.pinned),
     generationState: normalizeGenerationState(rawNote?.generationState),
     generationIndex: Math.max(0, Math.round(Number(rawNote?.generationIndex) || 0)),
+    position: normalizeNotePosition(rawNote?.position, getDefaultNotePosition(index)),
+    color: normalizeNoteColor(rawNote?.color),
     createdAt,
     updatedAt,
   };

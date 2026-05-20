@@ -66,6 +66,12 @@ describe('server ai helpers', () => {
     expect(ideas).toEqual(['First', 'Second', 'Third']);
   });
 
+  it('splits numbered ideas when the model puts them into one JSON string', () => {
+    const ideas = parseIdeaPayload('{"ideas":["1. Book a table\\n2. Compare menus\\n3. Prep snacks\\n4. Share costs\\n5. Avoid going out"]}');
+
+    expect(ideas).toEqual(['Book a table', 'Compare menus', 'Prep snacks', 'Share costs', 'Avoid going out']);
+  });
+
   it('allows smaller configured generation counts', () => {
     const ideas = parseIdeaPayload('{"ideas":["First","Second","Third"]}', { generationCount: 2 });
 

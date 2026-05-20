@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   createNote,
   deleteNote,
+  getDefaultNotePosition,
   normalizeBoard,
   normalizeDismissedNotes,
+  normalizeNoteColor,
+  normalizeNotePosition,
   selectAiContextNotes,
 } from './boardModel.js';
 
@@ -16,7 +19,7 @@ describe('boardModel', () => {
       aiSpecificity: -20,
       noteFontScale: 4,
       notes: [
-        { text: '  Keep this idea ', tags: ['Idea'], votes: -2, createdAt: 10 },
+        { text: '  Keep this idea ', tags: ['Idea'], votes: -2, createdAt: 10, color: 'mint' },
         { text: '   ' },
       ],
     }, 'en');
@@ -28,7 +31,26 @@ describe('boardModel', () => {
     expect(board.aiSpecificity).toBe(0);
     expect(board.noteFontScale).toBe(1.45);
     expect(board.notes).toHaveLength(1);
-    expect(board.notes[0]).toMatchObject({ text: 'Keep this idea', tag: 'Idea', votes: 0 });
+    expect(board.notes[0]).toMatchObject({
+      text: 'Keep this idea',
+      tag: 'Idea',
+      votes: 0,
+      position: getDefaultNotePosition(0),
+      color: 'mint',
+    });
+  });
+
+  it('normalizes note color choices', () => {
+    expect(normalizeNoteColor('blue')).toBe('blue');
+    expect(normalizeNoteColor('not-a-color')).toBe('');
+    expect(createNote({ text: 'Color', color: 'rose', fallbackAuthor: 'Me' }).color).toBe('rose');
+  });
+
+  it('normalizes note positions for the freeform canvas', () => {
+    expect(normalizeNotePosition({ x: 12.4, y: 98.8 })).toEqual({ x: 12, y: 99 });
+    expect(normalizeNotePosition({ x: -50, y: 9001 })).toEqual({ x: -50, y: 9001 });
+    expect(normalizeNotePosition({ x: -60000, y: 60000 })).toEqual({ x: -50000, y: 50000 });
+    expect(normalizeNotePosition(null, { x: 120, y: 240 })).toEqual({ x: 120, y: 240 });
   });
 
   it('can drop stale generating notes when loading saved boards', () => {

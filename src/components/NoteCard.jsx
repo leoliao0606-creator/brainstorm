@@ -4,13 +4,15 @@ import {
   ArchiveRestore,
   ChevronDown,
   Minus,
+  Move,
+  Palette,
   Pin,
   Plus,
   Sparkles,
   Trash2,
   Vote,
 } from 'lucide-react';
-import { MAX_AI_WEIGHT } from '../lib/boardModel.js';
+import { MAX_AI_WEIGHT, NOTE_COLOR_OPTIONS } from '../lib/boardModel.js';
 import { getLocale } from '../lib/locale.js';
 import { formatNoteTime } from '../lib/formatters.js';
 import { autoResizeTextarea, tiltForNote, toneIndexForNote } from '../lib/ui.js';
@@ -22,15 +24,22 @@ export function NoteCard({
   onDelete,
   onFilterTag,
   onPinToggle,
+  onColorChange,
   onSave,
   onVote,
   onWeightChange,
+  isDragging = false,
+  onDragPointerCancel,
+  onDragPointerDown,
+  onDragPointerMove,
+  onDragPointerUp,
 }) {
   const copy = getLocale(language).text.noteCard;
   const [openPanel, setOpenPanel] = useState(null);
   const textRef = useRef(null);
   const tagRef = useRef(null);
   const tone = toneIndexForNote(note);
+  const colorClass = note.color ? `note-card--${note.color}` : `note-card--${tone}`;
   const tilt = tiltForNote(note.id);
   const isGenerating = note.generationState === 'generating';
   const noteStyle = {
@@ -81,8 +90,12 @@ export function NoteCard({
 
   return (
     <article
-      className={`note-card note-card--${tone}${isGenerating ? ' note-card--generating' : ''}`}
+      className={`note-card ${colorClass}${isGenerating ? ' note-card--generating' : ''}${isDragging ? ' note-card--dragging' : ''}`}
       style={noteStyle}
+      onPointerCancel={onDragPointerCancel}
+      onPointerDown={onDragPointerDown}
+      onPointerMove={onDragPointerMove}
+      onPointerUp={onDragPointerUp}
     >
       <div className="note-card__tape" aria-hidden="true" />
       <header className="note-card__header">
@@ -100,6 +113,9 @@ export function NoteCard({
           </span>
         ) : null}
         {isGenerating ? <span className="note-card__status-pill">{copy.generatingBadge}</span> : null}
+        <span className="note-card__move-handle" title={copy.move}>
+          <Move size={14} aria-hidden="true" />
+        </span>
       </header>
 
       <textarea
@@ -216,6 +232,31 @@ export function NoteCard({
                   placeholder={copy.tagPlaceholder}
                 />
               </label>
+
+              <div className="note-card__menu-field">
+                <span>{copy.colorLabel}</span>
+                <div className="note-card__color-grid" role="group" aria-label={copy.colorLabel}>
+                  <button
+                    className={`note-card__color-option note-card__color-option--auto${!note.color ? ' note-card__color-option--active' : ''}`}
+                    type="button"
+                    onClick={() => onColorChange(note.id, '')}
+                    aria-label={copy.colorAuto}
+                    title={copy.colorAuto}
+                  >
+                    <Palette size={13} />
+                  </button>
+                  {NOTE_COLOR_OPTIONS.map((color) => (
+                    <button
+                      key={color}
+                      className={`note-card__color-option note-card__color-option--${color}${note.color === color ? ' note-card__color-option--active' : ''}`}
+                      type="button"
+                      onClick={() => onColorChange(note.id, color)}
+                      aria-label={copy.colors[color]}
+                      title={copy.colors[color]}
+                    />
+                  ))}
+                </div>
+              </div>
 
               <div className="note-card__menu-actions">
                 <button

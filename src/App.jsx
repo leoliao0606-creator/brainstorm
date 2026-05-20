@@ -12,16 +12,18 @@ import {
 import {
   ArrowLeft,
   Download,
+  LocateFixed,
   MessageSquareText,
   Plus,
   RefreshCw,
   Settings,
-  Sparkles,
   Square,
   Undo2,
   Upload,
   Users,
   WandSparkles,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import { AiSettingsModal } from './components/AiSettingsModal.jsx';
 import { CollapsibleSection } from './components/CollapsibleSection.jsx';
@@ -38,13 +40,16 @@ import {
   createInitialBoard,
   createNote,
   deleteNote,
+  getDefaultNotePosition,
   normalizeAiDivergence,
   normalizeAiSpecificity,
   normalizeAiWeight,
   normalizeBoard,
   normalizeDismissedNotes,
+  normalizeNoteColor,
   normalizeNoteFingerprint,
   normalizeNoteFontScale,
+  normalizeNotePosition,
   patchNote,
   removeNotesById,
   selectAiContextNotes,
@@ -80,6 +85,71 @@ import { downloadBoard } from './lib/ui.js';
 import './App.css';
 
 const UNDO_LIMIT = 20;
+const CANVAS_MIN_WIDTH = 3200;
+const CANVAS_MIN_HEIGHT = 2200;
+const CANVAS_CARD_WIDTH = 286;
+const CANVAS_CARD_HEIGHT = 318;
+const CANVAS_EDGE_PADDING = 96;
+const CANVAS_RUNWAY_MIN = 3200;
+const CANVAS_RUNWAY_MAX = 9600;
+const DRAG_THRESHOLD = 2;
+const CANVAS_ZOOM_DEFAULT = 1;
+const CANVAS_ZOOM_MIN = 0.55;
+const CANVAS_ZOOM_MAX = 1.65;
+const CANVAS_ZOOM_STEP = 0.1;
+const CANVAS_ARROW_PAN_STEP = 72;
+const TRACKPAD_PAN_SENSITIVITY = 0.28;
+const TRACKPAD_WHEEL_DELTA_LIMIT = 220;
+const CANVAS_FIT_PADDING = 96;
+const CANVAS_INSERT_GAP_X = 30;
+const CANVAS_INSERT_GAP_Y = 28;
+const CANVAS_INSERT_MARGIN = 18;
+const MOUSE_WHEEL_ZOOM_SENSITIVITY = 0.0009;
+
+function isInteractiveNoteTarget(target) {
+  return Boolean(
+    target?.closest?.('button, input, textarea, select, a, [data-note-no-drag="true"], .note-card__panel, .note-card__menu')
+  );
+}
+
+function isEditableTarget(target) {
+  return Boolean(target?.closest?.('input, textarea, select, [contenteditable="true"]'));
+}
+
+function isLikelyTrackpadWheel(event, deltaX, deltaY) {
+  if (event.deltaMode !== 0) return false;
+  if (Math.abs(deltaX) > 0) return true;
+  if (!Number.isInteger(deltaY)) return true;
+  return Math.abs(deltaY) < TRACKPAD_WHEEL_DELTA_LIMIT;
+}
+
+function normalizeCanvasZoom(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return CANVAS_ZOOM_DEFAULT;
+  return Math.max(CANVAS_ZOOM_MIN, Math.min(CANVAS_ZOOM_MAX, Number(parsed.toFixed(2))));
+}
+
+function noteRect(position) {
+  return {
+    x: position.x,
+    y: position.y,
+    width: CANVAS_CARD_WIDTH,
+    height: CANVAS_CARD_HEIGHT,
+  };
+}
+
+function rectsOverlap(a, b, margin = 0) {
+  return (
+    a.x < b.x + b.width + margin &&
+    a.x + a.width + margin > b.x &&
+    a.y < b.y + b.height + margin &&
+    a.y + a.height + margin > b.y
+  );
+}
+
+function snapCanvasPosition(value) {
+  return Math.round(value / 8) * 8;
+}
 
 function App() {
   const [language, setLanguage] = useState(loadLanguage);
@@ -87,7 +157,8 @@ function App() {
   const [activeProjectId, setActiveProjectId] = useState(null);
   const [board, setBoard] = useState(null);
   const [composer, setComposer] = useState({ text: '', tag: '' });
-  const [promptIndex, setPromptIndex] = useState(0);
+  const [aiPromptDraft, setAiPromptDraft] = useState(() => ({ text: '', tag: getLocale(language).tagSuggestions[0] }));
+  const [sidebarTab, setSidebarTab] = useState('capture');
   const [filters, setFilters] = useState({ scope: 'active', tag: 'all', sort: 'recent', search: '' });
   const [notice, setNotice] = useState(null);
   const [undoStack, setUndoStack] = useState([]);
@@ -97,6 +168,7 @@ function App() {
   const [aiStatusLoading, setAiStatusLoading] = useState(false);
   const [aiStreamVisible, setAiStreamVisible] = useState(false);
   const [aiStreamText, setAiStreamText] = useState('');
+  const [aiConversationPrompt, setAiConversationPrompt] = useState('');
   const [aiAssist, setAiAssist] = useState({
     available: null,
     loading: false,
@@ -111,6 +183,18 @@ function App() {
   const revealTimersRef = useRef([]);
   const generationRequestRef = useRef(null);
   const activeProjectIdRef = useRef(activeProjectId);
+  const canvasViewportRef = useRef(null);
+  const dragSessionRef = useRef(null);
+  const panSessionRef = useRef(null);
+  const canvasZoomRef = useRef(CANVAS_ZOOM_DEFAULT);
+  const canvasInitialScrollRef = useRef(null);
+  const spacePressedRef = useRef(false);
+  const suppressCanvasContextMenuRef = useRef(false);
+  const [dragPreview, setDragPreview] = useState(null);
+  const [canvasZoom, setCanvasZoom] = useState(CANVAS_ZOOM_DEFAULT);
+  const [canvasViewportSize, setCanvasViewportSize] = useState({ width: 0, height: 0 });
+  const [isCanvasPanning, setIsCanvasPanning] = useState(false);
+  const [isSpacePanning, setIsSpacePanning] = useState(false);
 
   const locale = getLocale(language);
   const text = locale.text;
@@ -130,10 +214,6 @@ function App() {
   const aiDivergence = board?.aiDivergence ?? DEFAULT_AI_DIVERGENCE;
   const aiSpecificity = board?.aiSpecificity ?? DEFAULT_AI_SPECIFICITY;
   const noteFontScale = board?.noteFontScale ?? DEFAULT_NOTE_FONT_SCALE;
-  const promptDeck = locale.promptDeck;
-  const currentPrompt = promptDeck[promptIndex % promptDeck.length];
-  const aiPromptDeck = getLocale(aiLanguage).promptDeck;
-  const currentAiPrompt = aiPromptDeck[promptIndex % aiPromptDeck.length];
   const canUndo = undoStack.length > 0;
 
   const aiStatusMessage = aiAssist.loading
@@ -233,6 +313,41 @@ function App() {
     return sortNotes(filtered, filters.sort, language);
   }, [activeNotes, archivedNotes, deferredSearch, filters.scope, filters.sort, filters.tag, language]);
 
+  const canvasLayout = useMemo(() => {
+    const bounds = visibleNotes.reduce(
+      (acc, note, index) => {
+        const position = normalizeNotePosition(note.position, getDefaultNotePosition(index));
+        return {
+          minX: Math.min(acc.minX, position.x),
+          minY: Math.min(acc.minY, position.y),
+          maxX: Math.max(acc.maxX, position.x + CANVAS_CARD_WIDTH),
+          maxY: Math.max(acc.maxY, position.y + CANVAS_CARD_HEIGHT),
+        };
+      },
+      { minX: 0, minY: 0, maxX: 0, maxY: 0 }
+    );
+    const runwayX = Math.max(
+      CANVAS_RUNWAY_MIN,
+      Math.min(CANVAS_RUNWAY_MAX, Math.round((canvasViewportSize.width || CANVAS_RUNWAY_MIN) * 4))
+    );
+    const runwayY = Math.max(
+      CANVAS_RUNWAY_MIN,
+      Math.min(CANVAS_RUNWAY_MAX, Math.round((canvasViewportSize.height || CANVAS_RUNWAY_MIN) * 4))
+    );
+    const contentWidth = Math.max(CANVAS_MIN_WIDTH, bounds.maxX - bounds.minX + CANVAS_EDGE_PADDING * 2);
+    const contentHeight = Math.max(CANVAS_MIN_HEIGHT, bounds.maxY - bounds.minY + CANVAS_EDGE_PADDING * 2);
+
+    return {
+      width: contentWidth + runwayX * 2,
+      height: contentHeight + runwayY * 2,
+      originX: runwayX - bounds.minX + CANVAS_EDGE_PADDING,
+      originY: runwayY - bounds.minY + CANVAS_EDGE_PADDING,
+      bounds,
+      centerX: (bounds.minX + bounds.maxX) / 2,
+      centerY: (bounds.minY + bounds.maxY) / 2,
+    };
+  }, [canvasViewportSize.height, canvasViewportSize.width, visibleNotes]);
+
   const applyIncomingBoard = useEffectEvent((serializedBoard) => {
     if (!serializedBoard || serializedBoard === lastSerializedRef.current) return;
     try {
@@ -298,6 +413,72 @@ function App() {
   }, [activeProjectId]);
 
   useEffect(() => {
+    canvasZoomRef.current = canvasZoom;
+  }, [canvasZoom]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    function handleSpaceKeyDown(event) {
+      if (event.code !== 'Space' || isEditableTarget(event.target)) return;
+      spacePressedRef.current = true;
+      setIsSpacePanning(true);
+    }
+
+    function handleSpaceKeyUp(event) {
+      if (event.code !== 'Space') return;
+      spacePressedRef.current = false;
+      setIsSpacePanning(false);
+    }
+
+    function releaseSpacePan() {
+      spacePressedRef.current = false;
+      setIsSpacePanning(false);
+    }
+
+    window.addEventListener('keydown', handleSpaceKeyDown);
+    window.addEventListener('keyup', handleSpaceKeyUp);
+    window.addEventListener('blur', releaseSpacePan);
+    return () => {
+      window.removeEventListener('keydown', handleSpaceKeyDown);
+      window.removeEventListener('keyup', handleSpaceKeyUp);
+      window.removeEventListener('blur', releaseSpacePan);
+    };
+  }, []);
+
+  useEffect(() => {
+    const viewport = canvasViewportRef.current;
+    if (!viewport || typeof window === 'undefined') return undefined;
+
+    function syncCanvasViewportSize() {
+      setCanvasViewportSize({ width: viewport.clientWidth, height: viewport.clientHeight });
+    }
+
+    syncCanvasViewportSize();
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(syncCanvasViewportSize);
+      observer.observe(viewport);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener('resize', syncCanvasViewportSize);
+    return () => window.removeEventListener('resize', syncCanvasViewportSize);
+  }, [activeProjectId, visibleNotes.length]);
+
+  useEffect(() => {
+    const viewport = canvasViewportRef.current;
+    if (!activeProjectId || !viewport || !visibleNotes.length) return;
+    if (canvasInitialScrollRef.current === activeProjectId) return;
+    canvasInitialScrollRef.current = activeProjectId;
+
+    if (typeof window === 'undefined') return;
+    window.requestAnimationFrame(() => {
+      viewport.scrollLeft = Math.max(0, canvasLayout.originX * canvasZoomRef.current - 36);
+      viewport.scrollTop = Math.max(0, canvasLayout.originY * canvasZoomRef.current - 36);
+    });
+  }, [activeProjectId, canvasLayout.originX, canvasLayout.originY, visibleNotes.length]);
+
+  useEffect(() => {
     if (!activeProjectId || !board) return;
     const serialized = JSON.stringify(board);
     if (serialized === lastSerializedRef.current) return;
@@ -361,10 +542,12 @@ function App() {
     const nextBoard = loadBoardById(projectId, language);
     activeProjectIdRef.current = projectId;
     lastSerializedRef.current = '';
+    canvasInitialScrollRef.current = null;
     setBoard(nextBoard);
     setActiveProjectId(projectId);
     setFilters({ scope: 'active', tag: 'all', sort: 'recent', search: '' });
     setComposer({ text: '', tag: locale.tagSuggestions[0] });
+    setAiPromptDraft({ text: '', tag: locale.tagSuggestions[0] });
     clearUndoStack();
   }
 
@@ -402,6 +585,7 @@ function App() {
     removeBoardById(projectId);
     if (activeProjectId === projectId) {
       activeProjectIdRef.current = null;
+      canvasInitialScrollRef.current = null;
       setActiveProjectId(null);
       setBoard(null);
       clearUndoStack();
@@ -411,6 +595,7 @@ function App() {
   function handleBackToHome() {
     cancelGeneration();
     activeProjectIdRef.current = null;
+    canvasInitialScrollRef.current = null;
     setActiveProjectId(null);
     setBoard(null);
     lastSerializedRef.current = '';
@@ -423,6 +608,7 @@ function App() {
     persistLanguage(normalized);
     setLanguage(normalized);
     setComposer((current) => ({ ...current, tag: remapSuggestedTag(current.tag, language, normalized) }));
+    setAiPromptDraft((current) => ({ ...current, tag: remapSuggestedTag(current.tag, language, normalized) }));
     if (board) {
       setBoard((current) => {
         const cd = locale.defaults;
@@ -482,11 +668,353 @@ function App() {
     setBoard((current) => touchBoard({ ...current, [field]: value.trim() || fallback }));
   }
 
+  function getCanvasPoint(event) {
+    const viewport = canvasViewportRef.current;
+    if (!viewport) return null;
+    const rect = viewport.getBoundingClientRect();
+    const zoom = canvasZoomRef.current;
+    return {
+      x: (event.clientX - rect.left + viewport.scrollLeft) / zoom - canvasLayout.originX,
+      y: (event.clientY - rect.top + viewport.scrollTop) / zoom - canvasLayout.originY,
+    };
+  }
+
+  function getCanvasInsertionPositions(sourceBoard, count = 1) {
+    const total = Math.max(1, Math.round(Number(count) || 1));
+    const viewport = canvasViewportRef.current;
+    const notes = sourceBoard?.notes ?? [];
+    const occupiedRects = notes
+      .filter((note) => !note.archived)
+      .map((note, index) => noteRect(normalizeNotePosition(note.position, getDefaultNotePosition(index))));
+    const positions = [];
+
+    function accepts(position) {
+      const candidateRect = noteRect(position);
+      return ![...occupiedRects, ...positions.map(noteRect)].some((rect) =>
+        rectsOverlap(candidateRect, rect, CANVAS_INSERT_MARGIN)
+      );
+    }
+
+    if (!viewport) {
+      let fallbackIndex = notes.length;
+      while (positions.length < total && fallbackIndex < notes.length + total + 80) {
+        const position = normalizeNotePosition(getDefaultNotePosition(fallbackIndex));
+        if (accepts(position)) positions.push(position);
+        fallbackIndex += 1;
+      }
+      return positions.length ? positions : Array.from({ length: total }, (_, index) => getDefaultNotePosition(notes.length + index));
+    }
+
+    const zoom = canvasZoomRef.current;
+    const visibleLeft = viewport.scrollLeft / zoom - canvasLayout.originX;
+    const visibleTop = viewport.scrollTop / zoom - canvasLayout.originY;
+    const visibleWidth = viewport.clientWidth / zoom;
+    const visibleHeight = viewport.clientHeight / zoom;
+    const stepX = CANVAS_CARD_WIDTH + CANVAS_INSERT_GAP_X;
+    const stepY = CANVAS_CARD_HEIGHT + CANVAS_INSERT_GAP_Y;
+    const usableWidth = Math.max(CANVAS_CARD_WIDTH, visibleWidth - 96);
+    const columns = Math.max(1, Math.min(4, Math.floor((usableWidth + CANVAS_INSERT_GAP_X) / stepX)));
+    const clusterWidth = columns * CANVAS_CARD_WIDTH + (columns - 1) * CANVAS_INSERT_GAP_X;
+    const startX = snapCanvasPosition(visibleLeft + Math.max(44, (visibleWidth - clusterWidth) / 2));
+    const startY = snapCanvasPosition(visibleTop + Math.max(44, Math.min(72, visibleHeight * 0.12)));
+
+    for (let row = 0; positions.length < total && row < 80; row += 1) {
+      for (let column = 0; positions.length < total && column < columns; column += 1) {
+        const candidate = normalizeNotePosition({
+          x: startX + column * stepX,
+          y: startY + row * stepY,
+        }, getDefaultNotePosition(notes.length + positions.length));
+        if (accepts(candidate)) positions.push(candidate);
+      }
+    }
+
+    return positions;
+  }
+
+  function getCanvasInsertionPosition(sourceBoard) {
+    return getCanvasInsertionPositions(sourceBoard, 1)[0] ?? getDefaultNotePosition(sourceBoard?.notes?.length ?? 0);
+  }
+
+  function zoomCanvasTo(nextZoom, focalPoint) {
+    const normalizedZoom = normalizeCanvasZoom(nextZoom);
+    const currentZoom = canvasZoomRef.current;
+    if (normalizedZoom === currentZoom) return;
+
+    const viewport = canvasViewportRef.current;
+    if (!viewport) {
+      canvasZoomRef.current = normalizedZoom;
+      setCanvasZoom(normalizedZoom);
+      return;
+    }
+
+    const rect = viewport.getBoundingClientRect();
+    const anchorX = focalPoint ? focalPoint.clientX - rect.left : viewport.clientWidth / 2;
+    const anchorY = focalPoint ? focalPoint.clientY - rect.top : viewport.clientHeight / 2;
+    const canvasX = (viewport.scrollLeft + anchorX) / currentZoom;
+    const canvasY = (viewport.scrollTop + anchorY) / currentZoom;
+
+    canvasZoomRef.current = normalizedZoom;
+    setCanvasZoom(normalizedZoom);
+
+    if (typeof window !== 'undefined') {
+      window.requestAnimationFrame(() => {
+        viewport.scrollLeft = Math.max(0, canvasX * normalizedZoom - anchorX);
+        viewport.scrollTop = Math.max(0, canvasY * normalizedZoom - anchorY);
+      });
+    }
+  }
+
+  function centerCanvasView() {
+    const viewport = canvasViewportRef.current;
+    if (!viewport) return;
+
+    const boundsWidth = Math.max(CANVAS_CARD_WIDTH, canvasLayout.bounds.maxX - canvasLayout.bounds.minX);
+    const boundsHeight = Math.max(CANVAS_CARD_HEIGHT, canvasLayout.bounds.maxY - canvasLayout.bounds.minY);
+    const availableWidth = Math.max(1, viewport.clientWidth - CANVAS_FIT_PADDING * 2);
+    const availableHeight = Math.max(1, viewport.clientHeight - CANVAS_FIT_PADDING * 2);
+    const fitZoom = normalizeCanvasZoom(Math.min(availableWidth / boundsWidth, availableHeight / boundsHeight));
+    const centerX = (canvasLayout.centerX + canvasLayout.originX) * fitZoom;
+    const centerY = (canvasLayout.centerY + canvasLayout.originY) * fitZoom;
+
+    canvasZoomRef.current = fitZoom;
+    setCanvasZoom(fitZoom);
+
+    if (typeof window !== 'undefined') {
+      window.requestAnimationFrame(() => {
+        viewport.scrollLeft = Math.max(0, centerX - viewport.clientWidth / 2);
+        viewport.scrollTop = Math.max(0, centerY - viewport.clientHeight / 2);
+        viewport.focus({ preventScroll: true });
+      });
+      return;
+    }
+
+    viewport.scrollLeft = Math.max(0, centerX - viewport.clientWidth / 2);
+    viewport.scrollTop = Math.max(0, centerY - viewport.clientHeight / 2);
+    viewport.focus({ preventScroll: true });
+  }
+
+  function handleCanvasWheel(event) {
+    const viewport = canvasViewportRef.current;
+    if (!viewport) return;
+
+    event.preventDefault();
+    const deltaUnit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1;
+    const deltaX = event.deltaX * deltaUnit;
+    const deltaY = event.deltaY * deltaUnit;
+    const shouldZoom = event.ctrlKey || event.metaKey || (!event.shiftKey && !isLikelyTrackpadWheel(event, deltaX, deltaY));
+
+    if (shouldZoom) {
+      const zoomDelta = Math.abs(deltaY) >= Math.abs(deltaX) ? deltaY : deltaX;
+      const zoomFactor = Math.exp(-zoomDelta * MOUSE_WHEEL_ZOOM_SENSITIVITY);
+      zoomCanvasTo(canvasZoomRef.current * zoomFactor, event);
+      return;
+    }
+
+    const isTrackpadPan = isLikelyTrackpadWheel(event, deltaX, deltaY);
+    const panSensitivity = isTrackpadPan ? TRACKPAD_PAN_SENSITIVITY : 1;
+    const horizontalDelta = (event.shiftKey && Math.abs(deltaY) > Math.abs(deltaX) ? deltaY : deltaX) * panSensitivity;
+    const verticalDelta = (event.shiftKey && Math.abs(deltaY) > Math.abs(deltaX) ? 0 : deltaY) * panSensitivity;
+    viewport.scrollLeft += horizontalDelta;
+    viewport.scrollTop += verticalDelta;
+  }
+
+  function handleCanvasKeyDown(event) {
+    const viewport = canvasViewportRef.current;
+    if (!viewport || isEditableTarget(event.target)) return;
+
+    const key = event.key;
+    const modifier = event.ctrlKey || event.metaKey;
+    if (modifier && (key === '+' || key === '=')) {
+      event.preventDefault();
+      zoomCanvasTo(canvasZoomRef.current + CANVAS_ZOOM_STEP);
+      return;
+    }
+    if (modifier && key === '-') {
+      event.preventDefault();
+      zoomCanvasTo(canvasZoomRef.current - CANVAS_ZOOM_STEP);
+      return;
+    }
+    if (modifier && key === '0') {
+      event.preventDefault();
+      zoomCanvasTo(CANVAS_ZOOM_DEFAULT);
+      return;
+    }
+    if (event.code === 'Space') {
+      event.preventDefault();
+      return;
+    }
+    if (key === 'Home' && !modifier) {
+      event.preventDefault();
+      centerCanvasView();
+      return;
+    }
+
+    const panByKey = {
+      ArrowUp: [0, -CANVAS_ARROW_PAN_STEP],
+      ArrowDown: [0, CANVAS_ARROW_PAN_STEP],
+      ArrowLeft: [-CANVAS_ARROW_PAN_STEP, 0],
+      ArrowRight: [CANVAS_ARROW_PAN_STEP, 0],
+    }[key];
+    if (!panByKey || modifier) return;
+
+    event.preventDefault();
+    viewport.scrollLeft += panByKey[0] * (event.shiftKey ? 3 : 1);
+    viewport.scrollTop += panByKey[1] * (event.shiftKey ? 3 : 1);
+  }
+
+  function handleCanvasPointerDown(event) {
+    const isMouse = event.pointerType === 'mouse';
+    const panButton = !isMouse || event.button === 0 || event.button === 1 || event.button === 2;
+    if (!panButton) return;
+
+    const overNote = event.target.closest?.('.note-card');
+    const overToolbar = event.target.closest?.('.note-canvas-toolbar');
+    const forcePanOverObjects = isMouse && (event.button === 1 || event.button === 2 || spacePressedRef.current);
+    if (overToolbar || (overNote && !forcePanOverObjects)) return;
+
+    const viewport = canvasViewportRef.current;
+    if (!viewport) return;
+    viewport.focus({ preventScroll: true });
+
+    panSessionRef.current = {
+      pointerId: event.pointerId,
+      button: event.button,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startScrollLeft: viewport.scrollLeft,
+      startScrollTop: viewport.scrollTop,
+      moved: false,
+    };
+    setIsCanvasPanning(false);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    if (event.button === 1 || spacePressedRef.current) {
+      event.preventDefault();
+    }
+  }
+
+  function handleCanvasPointerMove(event) {
+    const session = panSessionRef.current;
+    const viewport = canvasViewportRef.current;
+    if (!session || !viewport || session.pointerId !== event.pointerId) return;
+
+    const deltaX = event.clientX - session.startClientX;
+    const deltaY = event.clientY - session.startClientY;
+    const moved = session.moved || Math.abs(deltaX) > DRAG_THRESHOLD || Math.abs(deltaY) > DRAG_THRESHOLD;
+
+    if (moved) {
+      viewport.scrollLeft = session.startScrollLeft - deltaX;
+      viewport.scrollTop = session.startScrollTop - deltaY;
+      event.preventDefault();
+    }
+
+    if (moved !== session.moved) {
+      setIsCanvasPanning(true);
+    }
+    panSessionRef.current = { ...session, moved };
+  }
+
+  function endCanvasPan(event) {
+    const session = panSessionRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    suppressCanvasContextMenuRef.current = session.button === 2 && session.moved;
+    panSessionRef.current = null;
+    setIsCanvasPanning(false);
+  }
+
+  function handleCanvasContextMenu(event) {
+    if (!suppressCanvasContextMenuRef.current) return;
+    event.preventDefault();
+    suppressCanvasContextMenuRef.current = false;
+  }
+
+  function handleNotePointerDown(event, note, index) {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if (spacePressedRef.current) return;
+    if (isInteractiveNoteTarget(event.target)) return;
+
+    const point = getCanvasPoint(event);
+    if (!point) return;
+
+    const position = normalizeNotePosition(note.position, getDefaultNotePosition(index));
+    dragSessionRef.current = {
+      pointerId: event.pointerId,
+      noteId: note.id,
+      startPoint: point,
+      startPosition: position,
+      latestPosition: position,
+      moved: false,
+      undoBoard: snapshotBoard(board),
+    };
+    setDragPreview({ noteId: note.id, position, moved: false });
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function handleNotePointerMove(event) {
+    const session = dragSessionRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+
+    const point = getCanvasPoint(event);
+    if (!point) return;
+
+    const deltaX = point.x - session.startPoint.x;
+    const deltaY = point.y - session.startPoint.y;
+    const moved = session.moved || Math.abs(deltaX) > DRAG_THRESHOLD || Math.abs(deltaY) > DRAG_THRESHOLD;
+    const position = normalizeNotePosition({
+      x: session.startPosition.x + deltaX,
+      y: session.startPosition.y + deltaY,
+    }, session.startPosition);
+
+    dragSessionRef.current = { ...session, latestPosition: position, moved };
+    setDragPreview({ noteId: session.noteId, position, moved });
+    if (moved) event.preventDefault();
+  }
+
+  function handleNotePointerEnd(event) {
+    const session = dragSessionRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragSessionRef.current = null;
+    setDragPreview(null);
+
+    if (!session.moved) return;
+
+    recordUndo(text.undo.move, session.undoBoard);
+    setBoard((current) => (
+      current
+        ? patchNote(current, session.noteId, () => ({ position: session.latestPosition }))
+        : current
+    ));
+  }
+
+  function handleNotePointerCancel(event) {
+    const session = dragSessionRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragSessionRef.current = null;
+    setDragPreview(null);
+  }
+
   function handleAddNote(event) {
     event.preventDefault();
     const idea = composer.text.trim();
     if (!idea || !board) return;
-    const note = createNote({ text: idea, tag: composer.tag, author: board.owner, fallbackAuthor: locale.defaults.owner });
+    const note = createNote({
+      text: idea,
+      tag: composer.tag,
+      author: board.owner,
+      fallbackAuthor: locale.defaults.owner,
+      position: getCanvasInsertionPosition(board),
+    });
     setBoard((current) => appendNotes(current, [note]));
     setComposer((current) => ({ ...current, text: '' }));
     setNotice({ tone: 'success', text: text.notices.added });
@@ -496,6 +1024,13 @@ function App() {
     const currentBoard = board;
     const requestProjectId = activeProjectId;
     if (!currentBoard || !requestProjectId) return;
+    const customPrompt = aiPromptDraft.text.trim();
+    const customTag = aiPromptDraft.tag.trim() || locale.tagSuggestions[0];
+    if (!customPrompt) {
+      setNotice({ tone: 'info', text: text.notices.aiPromptRequired });
+      setSidebarTab('ai');
+      return;
+    }
 
     cancelGeneration({ resetLoading: false });
     const token = Symbol('ai-generation');
@@ -510,15 +1045,17 @@ function App() {
     const dismissedNotes = normalizeDismissedNotes(currentBoard.dismissedNotes).filter(
       (entry) => !activeFingerprints.has(normalizeNoteFingerprint(entry))
     );
+    const placeholderPositions = getCanvasInsertionPositions(currentBoard, aiGenerationCount);
     const placeholderNotes = Array.from({ length: aiGenerationCount }, (_, generationIndex) =>
       createNote({
         text: text.noteCard.generating,
-        tag: currentAiPrompt.tag,
+        tag: customTag,
         author: text.authors.ideaEngine,
         source: 'ai',
         fallbackAuthor: locale.defaults.owner,
         generationState: 'generating',
         generationIndex,
+        position: placeholderPositions[generationIndex],
       })
     );
     const placeholderIds = placeholderNotes.map((note) => note.id);
@@ -528,6 +1065,7 @@ function App() {
     setAiAssist((current) => ({ ...current, loading: true, reason: current.available === null ? 'checking' : current.reason }));
     setAiStreamVisible(true);
     setAiStreamText('');
+    setAiConversationPrompt('');
 
     try {
       const { ok, payload } = await requestIdeaGenerationStream({
@@ -537,10 +1075,10 @@ function App() {
         language: aiLanguage,
         topic: currentBoard.title,
         prompt: {
-          id: currentAiPrompt.id,
-          title: currentAiPrompt.title,
-          prompt: currentAiPrompt.prompt,
-          tag: currentAiPrompt.tag,
+          id: 'custom',
+          title: text.aiPanel.customPromptTitle,
+          prompt: customPrompt,
+          tag: customTag,
         },
         aiDivergence: currentAiDivergence,
         aiSpecificity: currentAiSpecificity,
@@ -554,6 +1092,9 @@ function App() {
         signal: controller.signal,
         onEvent: (event) => {
           if (!isCurrentGeneration(token, requestProjectId)) return;
+          if (event.type === 'meta' && event.finalPrompt) {
+            setAiConversationPrompt(event.finalPrompt);
+          }
           if (event.type === 'chunk' && event.content) {
             setAiStreamText((current) => `${current}${event.content}`);
           }
@@ -592,7 +1133,7 @@ function App() {
             if (!current.notes.some((note) => note.id === placeholderId)) return current;
             return patchNote(current, placeholderId, () => ({
               text: idea,
-              tag: currentAiPrompt.tag,
+              tag: customTag,
               author: text.authors.ideaEngine,
               source: 'ai',
               generationState: 'ready',
@@ -644,13 +1185,22 @@ function App() {
   }
 
   function handlePinPrompt() {
+    if (!board) return;
+    const customPrompt = aiPromptDraft.text.trim();
+    const customTag = aiPromptDraft.tag.trim() || locale.tagSuggestions[0];
+    if (!customPrompt) {
+      setNotice({ tone: 'info', text: text.notices.aiPromptRequired });
+      setSidebarTab('ai');
+      return;
+    }
     const note = createNote({
-      text: currentPrompt.prompt,
-      tag: currentPrompt.tag,
+      text: customPrompt,
+      tag: customTag,
       author: text.authors.promptHost,
       pinned: true,
       source: 'prompt',
       fallbackAuthor: locale.defaults.owner,
+      position: getCanvasInsertionPosition(board),
     });
     setBoard((current) => appendNotes(current, [note]));
     setNotice({ tone: 'success', text: text.notices.promptPinned });
@@ -662,6 +1212,10 @@ function App() {
 
   function handleAiWeightChange(noteId, aiWeight) {
     setBoard((current) => patchNote(current, noteId, () => ({ aiWeight: normalizeAiWeight(aiWeight) })));
+  }
+
+  function handleNoteColorChange(noteId, color) {
+    setBoard((current) => patchNote(current, noteId, () => ({ color: normalizeNoteColor(color) })));
   }
 
   function handleAiDivergenceChange(nextValue) {
@@ -783,15 +1337,6 @@ function App() {
             <Undo2 size={16} />
             <span>{text.undo.button}</span>
           </button>
-          <button
-            className="board-topbar__back board-topbar__tool"
-            type="button"
-            onClick={handleOpenAiSettings}
-            title={text.aiSettings.button}
-          >
-            <Settings size={16} />
-            <span>{text.aiSettings.button}</span>
-          </button>
           <label className="presence-card">
             <Users size={15} />
             <span className="sr-only">{text.hostSr}</span>
@@ -843,9 +1388,39 @@ function App() {
         />
       ) : null}
 
+      {(() => {
+        const sidebarTabs = [
+          { id: 'capture', label: text.quickPanel.tab },
+          { id: 'ai', label: text.aiPanel.tab },
+        ];
+
+        return (
       <main className="workspace">
         <aside className="workspace__sidebar">
-          <section className="panel panel--capture">
+          <div className="sidebar-tabs" role="tablist" aria-label={text.sidebarTabsLabel}>
+            {sidebarTabs.map((tab) => (
+              <button
+                key={tab.id}
+                className={`sidebar-tabs__button${sidebarTab === tab.id ? ' sidebar-tabs__button--active' : ''}`}
+                type="button"
+                role="tab"
+                aria-selected={sidebarTab === tab.id}
+                aria-controls={`sidebar-panel-${tab.id}`}
+                id={`sidebar-tab-${tab.id}`}
+                onClick={() => setSidebarTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <section
+            id="sidebar-panel-capture"
+            className={`sidebar-tab-panel panel panel--capture${sidebarTab === 'capture' ? ' sidebar-tab-panel--active' : ''}`}
+            role="tabpanel"
+            aria-labelledby="sidebar-tab-capture"
+            hidden={sidebarTab !== 'capture'}
+          >
             <div className="panel__eyebrow">
               <span className="eyebrow">{text.quickPanel.eyebrow}</span>
               <h3 className="panel__title">{text.quickPanel.title}</h3>
@@ -887,26 +1462,60 @@ function App() {
             </form>
           </section>
 
-          <CollapsibleSection title={language === 'zh' ? 'AI 灵感引擎' : 'AI Idea Engine'} defaultOpen={true}>
+          <section
+            id="sidebar-panel-ai"
+            className={`sidebar-tab-panel panel panel--ai${sidebarTab === 'ai' ? ' sidebar-tab-panel--active' : ''}`}
+            role="tabpanel"
+            aria-labelledby="sidebar-tab-ai"
+            hidden={sidebarTab !== 'ai'}
+          >
+            <div className="panel__eyebrow">
+              <h3 className="panel__title">{text.aiPanel.title}</h3>
+            </div>
             <div className="ai-panel">
-              <div className="prompt-card__kicker">
-                <Sparkles size={13} />
-                {currentPrompt.kicker}
-              </div>
-              <p className="ai-panel__prompt">{currentPrompt.prompt}</p>
+              <label className="field">
+                <span className="field__label">{text.aiPanel.promptLabel}</span>
+                <textarea
+                  className="field__control field__control--textarea ai-panel__input"
+                  placeholder={text.aiPanel.promptPlaceholder}
+                  value={aiPromptDraft.text}
+                  onChange={(e) => setAiPromptDraft((current) => ({ ...current, text: e.target.value }))}
+                />
+              </label>
+              <label className="field">
+                <span className="field__label">{text.aiPanel.tagLabel}</span>
+                <input
+                  className="field__control"
+                  value={aiPromptDraft.tag}
+                  onChange={(e) => setAiPromptDraft((current) => ({ ...current, tag: e.target.value }))}
+                  placeholder={text.aiPanel.tagPlaceholder}
+                />
+              </label>
               <div className="prompt-card__status">
                 <span className="prompt-card__status-label">{text.promptStatus.label}</span>
                 <span>{aiStatusMessage}</span>
               </div>
+              <button className="button button--ghost button--full" type="button" onClick={handleOpenAiSettings}>
+                <Settings size={14} /> {text.aiSettings.button}
+              </button>
               {aiStreamVisible ? (
                 <div className="ai-stream-panel">
                   <div className="ai-stream-panel__header">
                     <span>{text.promptStatus.outputLabel}</span>
                     <strong>{aiAssist.loading ? text.promptStatus.outputStreaming : text.promptStatus.outputReady}</strong>
                   </div>
-                  <pre className="ai-stream-panel__body">
-                    {aiStreamText || text.promptStatus.outputWaiting}
-                  </pre>
+                  <div className="ai-stream-panel__section">
+                    <span className="ai-stream-panel__label">{text.promptStatus.finalPromptLabel}</span>
+                    <pre className="ai-stream-panel__body ai-stream-panel__body--prompt">
+                      {aiConversationPrompt || text.promptStatus.promptWaiting}
+                    </pre>
+                  </div>
+                  <div className="ai-stream-panel__section">
+                    <span className="ai-stream-panel__label">{text.promptStatus.responseLabel}</span>
+                    <pre className="ai-stream-panel__body">
+                      {aiStreamText || text.promptStatus.outputWaiting}
+                    </pre>
+                  </div>
                 </div>
               ) : null}
               <label className="field field--range ai-panel__range">
@@ -948,9 +1557,6 @@ function App() {
                 </div>
               </label>
               <div className="stack">
-                <button className="button button--ghost button--full" type="button" onClick={() => setPromptIndex((current) => (current + 1) % promptDeck.length)}>
-                  <RefreshCw size={14} /> {text.promptActions.rotate}
-                </button>
                 <button className="button button--secondary button--full" type="button" onClick={handlePinPrompt}>
                   <Plus size={14} /> {text.promptActions.pin}
                 </button>
@@ -974,7 +1580,7 @@ function App() {
                 ) : null}
               </div>
             </div>
-          </CollapsibleSection>
+          </section>
         </aside>
 
         <section className="workspace__board" style={{ '--note-font-scale': noteFontScale }}>
@@ -1038,21 +1644,116 @@ function App() {
           </CollapsibleSection>
 
           {visibleNotes.length ? (
-            <div className="note-grid">
-              {visibleNotes.map((note) => (
-                <NoteCard
-                  key={note.id}
-                  language={language}
-                  note={note}
-                  onArchiveToggle={handleArchiveToggle}
-                  onDelete={handleDeleteNote}
-                  onFilterTag={(tag) => setFilters((current) => ({ ...current, scope: 'active', tag: tag || 'all' }))}
-                  onPinToggle={handlePinToggle}
-                  onSave={handleSaveNote}
-                  onVote={handleVote}
-                  onWeightChange={handleAiWeightChange}
-                />
-              ))}
+            <div className="note-canvas-frame">
+              <div
+                ref={canvasViewportRef}
+                className={`note-canvas-shell${isCanvasPanning ? ' note-canvas-shell--panning' : ''}${isSpacePanning ? ' note-canvas-shell--space-pan' : ''}`}
+                role="region"
+                aria-label={text.boardCanvasLabel}
+                tabIndex={0}
+                onContextMenu={handleCanvasContextMenu}
+                onKeyDown={handleCanvasKeyDown}
+                onPointerCancel={endCanvasPan}
+                onPointerDown={handleCanvasPointerDown}
+                onPointerMove={handleCanvasPointerMove}
+                onPointerUp={endCanvasPan}
+                onWheel={handleCanvasWheel}
+              >
+                <div
+                  className="note-canvas-scaler"
+                  style={{
+                    width: Math.round(canvasLayout.width * canvasZoom),
+                    height: Math.round(canvasLayout.height * canvasZoom),
+                  }}
+                >
+                  <div
+                    className="note-canvas"
+                    style={{
+                      width: canvasLayout.width,
+                      height: canvasLayout.height,
+                      transform: `scale(${canvasZoom})`,
+                    }}
+                  >
+                    {visibleNotes.map((note, index) => {
+                      const savedPosition = normalizeNotePosition(note.position, getDefaultNotePosition(index));
+                      const activePosition = dragPreview?.noteId === note.id ? dragPreview.position : savedPosition;
+                      const isDragging = dragPreview?.noteId === note.id && dragPreview.moved;
+
+                      return (
+                        <div
+                          key={note.id}
+                          className={`note-canvas__item${isDragging ? ' note-canvas__item--dragging' : ''}`}
+                          style={{
+                            transform: `translate(${activePosition.x + canvasLayout.originX}px, ${activePosition.y + canvasLayout.originY}px)`,
+                            zIndex: dragPreview?.noteId === note.id ? 1000 : visibleNotes.length - index,
+                          }}
+                        >
+                          <NoteCard
+                            language={language}
+                            note={note}
+                            isDragging={isDragging}
+                            onArchiveToggle={handleArchiveToggle}
+                            onDelete={handleDeleteNote}
+                            onDragPointerCancel={handleNotePointerCancel}
+                            onDragPointerDown={(event) => handleNotePointerDown(event, note, index)}
+                            onDragPointerMove={handleNotePointerMove}
+                            onDragPointerUp={handleNotePointerEnd}
+                            onFilterTag={(tag) => setFilters((current) => ({ ...current, scope: 'active', tag: tag || 'all' }))}
+                            onColorChange={handleNoteColorChange}
+                            onPinToggle={handlePinToggle}
+                            onSave={handleSaveNote}
+                            onVote={handleVote}
+                            onWeightChange={handleAiWeightChange}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <div className="note-canvas-toolbar" data-note-no-drag="true" aria-label={text.canvasZoom.label}>
+                <button
+                  className="note-canvas-toolbar__button"
+                  type="button"
+                  onClick={centerCanvasView}
+                  aria-label={text.canvasZoom.center}
+                  title={text.canvasZoom.center}
+                >
+                  <LocateFixed size={16} />
+                </button>
+                <button
+                  className="note-canvas-toolbar__button"
+                  type="button"
+                  onClick={() => zoomCanvasTo(canvasZoom - CANVAS_ZOOM_STEP)}
+                  disabled={canvasZoom <= CANVAS_ZOOM_MIN}
+                  aria-label={text.canvasZoom.zoomOut}
+                  title={text.canvasZoom.zoomOut}
+                >
+                  <ZoomOut size={16} />
+                </button>
+                <span className="note-canvas-toolbar__value">{Math.round(canvasZoom * 100)}%</span>
+                <button
+                  className="note-canvas-toolbar__button"
+                  type="button"
+                  onClick={() => zoomCanvasTo(canvasZoom + CANVAS_ZOOM_STEP)}
+                  disabled={canvasZoom >= CANVAS_ZOOM_MAX}
+                  aria-label={text.canvasZoom.zoomIn}
+                  title={text.canvasZoom.zoomIn}
+                >
+                  <ZoomIn size={16} />
+                </button>
+                <button
+                  className="note-canvas-toolbar__button"
+                  type="button"
+                  onClick={() => zoomCanvasTo(CANVAS_ZOOM_DEFAULT)}
+                  disabled={canvasZoom === CANVAS_ZOOM_DEFAULT}
+                  aria-label={text.canvasZoom.reset}
+                  title={text.canvasZoom.reset}
+                >
+                  <RefreshCw size={15} />
+                </button>
+              </div>
             </div>
           ) : (
             <div className="empty-state">
@@ -1063,6 +1764,8 @@ function App() {
           )}
         </section>
       </main>
+        );
+      })()}
 
       <div className="bottom-panels">
         <CollapsibleSection title={text.statsTitle} defaultOpen={false}>

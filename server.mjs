@@ -5,6 +5,7 @@ import { readFile, stat } from 'node:fs/promises';
 import {
   buildOllamaChatPayload,
   fetchOllamaStatus,
+  formatMessagesForDisplay,
   generateIdeas,
   normalizeIdeaGenerationPayload,
   parseIdeaPayload,
@@ -250,17 +251,19 @@ async function handleIdeaGenerationStream(request, response) {
       }
     });
 
+    const chatPayload = buildOllamaChatPayload({
+      ollamaModel: runtime.ollamaModel,
+      ...normalized.value,
+      stream: true,
+    });
+
     const upstreamResponse = await fetch(`${runtime.ollamaBaseUrl}/api/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       signal: upstreamController.signal,
-      body: JSON.stringify(buildOllamaChatPayload({
-        ollamaModel: runtime.ollamaModel,
-        ...normalized.value,
-        stream: true,
-      })),
+      body: JSON.stringify(chatPayload),
     });
 
     if (!upstreamResponse.ok) {
@@ -277,6 +280,7 @@ async function handleIdeaGenerationStream(request, response) {
       type: 'meta',
       model: runtime.ollamaModel,
       baseUrl: runtime.ollamaBaseUrl,
+      finalPrompt: formatMessagesForDisplay(chatPayload.messages),
     });
 
     const decoder = new TextDecoder();

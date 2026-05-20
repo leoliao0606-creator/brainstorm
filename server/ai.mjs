@@ -94,10 +94,10 @@ export function buildLensInstruction({ language, prompt }) {
   if (lensInstruction) return lensInstruction;
 
   if (normalizedLanguage === 'en') {
-    return String(prompt?.prompt ?? '').trim() || 'Use this lens to expand the current board without changing its domain or intent.';
+    return String(prompt?.prompt ?? '').trim() || 'Use the user prompt to expand the current board without changing its domain or intent.';
   }
 
-  return String(prompt?.prompt ?? '').trim() || '请把这个角度应用在当前便签墙上，但不要改变主题领域或意图。';
+  return String(prompt?.prompt ?? '').trim() || '请根据用户输入扩展当前便签墙，但不要改变主题领域或意图。';
 }
 
 function buildDivergenceInstructions(language) {
@@ -126,14 +126,14 @@ function buildDivergenceDirective(language, aiDivergence) {
 
   if (language === 'en') {
     if (level >= 100) {
-      return 'Divergence is 100/100: completely ignore existing notes. Use only the board title and thinking lens.';
+      return 'Divergence is 100/100: completely ignore existing notes. Use only the board title and user prompt.';
     }
 
     return `Divergence is ${level}/100. Continuous setting: existing-note influence is about ${noteInfluence}%, and new-direction freedom is about ${level}%. At 0/100, every idea should directly preserve or extend the strongest notes. At 100/100, existing notes are omitted completely. Between those endpoints, reduce note dependence smoothly as divergence rises.`;
   }
 
   if (level >= 100) {
-    return '发散程度为 100/100：完全忽略现有便签，只根据工作板标题和思考透镜生成。';
+    return '发散程度为 100/100：完全忽略现有便签，只根据工作板标题和用户输入生成。';
   }
 
   return `发散程度为 ${level}/100。连续解释：现有便签影响力约 ${noteInfluence}%，新方向自由度约 ${level}%。0/100 时每条都应直接承接最强便签；100/100 时现有便签会被完全省略；中间档位按比例平滑减少对便签的依赖。`;
@@ -195,11 +195,11 @@ export function buildMessages({
         {
           role: 'system',
           content:
-            'You are a general-purpose brainstorming assistant working on one board. The board title defines the main topic and intent; existing notes refine that topic. Deleted notes are explicit exclusions, not hidden context. The prompt card is only a thinking lens, never a replacement topic. Do not turn the topic into a product, startup, software tool, or student project unless the board title or notes explicitly ask for that. Return strict JSON only: {"ideas":["..."]}. No markdown.',
+            'You are a general-purpose brainstorming assistant working on one board. The board title defines the main topic and intent; existing notes refine that topic. Deleted notes are explicit exclusions, not hidden context. The user prompt is guidance, never a replacement topic. Do not turn the topic into a product, startup, software tool, or student project unless the board title or notes explicitly ask for that. Return strict JSON only: {"ideas":["..."]}. No markdown.',
         },
         {
           role: 'user',
-          content: `Board title / main topic: ${topic || '(untitled)'}\nExisting notes:\n${notesList}${hasDismissedNotes ? `\n\nRemoved notes to avoid reviving:\n${dismissedList}` : ''}\n\nThinking lens: ${prompt.title}\nLens instruction: ${lensInstruction}\nDivergence guidance: ${divergenceDirective}\nSpecificity guidance: ${specificityDirective}\n\nGenerate ${ideaCount} next-step ideas that:\n- treat the board title as the primary topic and the notes as weighted context\n- follow the continuous divergence guidance exactly; do not treat divergence as a low/medium/high bucket\n- follow the continuous specificity guidance exactly; do not treat specificity as a low/medium/high bucket\n- stay in the exact same real-world domain as the board title\n- if the topic is travel, an event, food, learning, life planning, or another everyday subject, keep it literal\n- use the lens as a reasoning angle, not as a replacement topic\n- when note influence is high, visibly build on the stronger notes; when note influence is low, use notes only as light inspiration\n- when a note includes "AI weight: 1-3", treat higher weight as a stronger anchor only in proportion to the note influence\n- if a concept appears in the removed-notes list, do NOT revive it, paraphrase it, or generate a near-duplicate\n- do NOT turn the topic into a product, startup, software tool, or student project unless explicitly requested\n- do NOT merely paraphrase an existing note with slightly different wording\n- each idea must add at least one option, detail, action, constraint, resource, route, comparison, or twist, with detail density controlled by specificity\n- the ideas must feel clearly different from each other\n- at least ${surprisingCount} idea${surprisingCount === 1 ? '' : 's'} should feel slightly surprising or non-obvious, while still realistic\n- are actionable and 1 sentence each\n- stay under 28 words each\n- do not prefix items with labels like "Idea 1:"\n${diversityDirective}\n- return valid JSON only with one key named "ideas" whose value is an array of ${ideaCount} strings`,
+          content: `Board title / main topic: ${topic || '(untitled)'}\nExisting notes:\n${notesList}${hasDismissedNotes ? `\n\nRemoved notes to avoid reviving:\n${dismissedList}` : ''}\n\nUser prompt title: ${prompt.title}\nUser prompt: ${lensInstruction}\nDivergence guidance: ${divergenceDirective}\nSpecificity guidance: ${specificityDirective}\n\nGenerate ${ideaCount} next-step ideas that:\n- treat the board title as the primary topic and the notes as weighted context\n- follow the continuous divergence guidance exactly; do not treat divergence as a low/medium/high bucket\n- follow the continuous specificity guidance exactly; do not treat specificity as a low/medium/high bucket\n- stay in the exact same real-world domain as the board title\n- if the topic is travel, an event, food, learning, life planning, or another everyday subject, keep it literal\n- use the user prompt as generation guidance, not as a replacement topic\n- when note influence is high, visibly build on the stronger notes; when note influence is low, use notes only as light inspiration\n- when a note includes "AI weight: 1-3", treat higher weight as a stronger anchor only in proportion to the note influence\n- if a concept appears in the removed-notes list, do NOT revive it, paraphrase it, or generate a near-duplicate\n- do NOT turn the topic into a product, startup, software tool, or student project unless explicitly requested\n- do NOT merely paraphrase an existing note with slightly different wording\n- each idea must add at least one option, detail, action, constraint, resource, route, comparison, or twist, with detail density controlled by specificity\n- the ideas must feel clearly different from each other\n- at least ${surprisingCount} idea${surprisingCount === 1 ? '' : 's'} should feel slightly surprising or non-obvious, while still realistic\n- are actionable and 1 sentence each\n- stay under 28 words each\n- do not prefix items with labels like "Idea 1:"\n${diversityDirective}\n- return valid JSON only with one key named "ideas" whose value is an array of ${ideaCount} strings`,
         },
       ];
     }
@@ -209,11 +209,11 @@ export function buildMessages({
       {
         role: 'system',
         content:
-          'You are a general-purpose brainstorming assistant. The board topic is the primary context. The prompt card is only a thinking lens. Deleted notes are explicit exclusions, not hidden context. Do not turn the topic into a product, startup, software tool, or student project unless the topic explicitly asks for that. Respond with strict JSON only in the shape {"ideas":["..."]}. No markdown.',
+          'You are a general-purpose brainstorming assistant. The board topic is the primary context. The user prompt is guidance. Deleted notes are explicit exclusions, not hidden context. Do not turn the topic into a product, startup, software tool, or student project unless the topic explicitly asks for that. Respond with strict JSON only in the shape {"ideas":["..."]}. No markdown.',
       },
       {
         role: 'user',
-        content: `Board topic: ${topic}\nBrainstorm lens: ${prompt.title}\nGuiding question: ${prompt.prompt}\nDivergence guidance: ${divergenceDirective}\nSpecificity guidance: ${specificityDirective}${hasDismissedNotes ? `\nAvoid reviving these removed ideas:\n${dismissedList}` : ''}\nGenerate ${ideaCount} actionable ideas for this exact topic, 1 sentence each, under 28 words.\nFollow both continuous guidance settings exactly.\nIf the topic is travel, an event, food, learning, life planning, or another everyday subject, keep it literal.\nDo not turn it into a product, startup, software tool, or student project unless explicitly requested.\nDo not prefix items with labels like "Idea 1:".\n${diversityDirective}\nReturn valid JSON only with one key named "ideas" whose value is an array of ${ideaCount} strings.`,
+        content: `Board topic: ${topic}\nUser prompt title: ${prompt.title}\nUser prompt: ${prompt.prompt}\nDivergence guidance: ${divergenceDirective}\nSpecificity guidance: ${specificityDirective}${hasDismissedNotes ? `\nAvoid reviving these removed ideas:\n${dismissedList}` : ''}\nGenerate ${ideaCount} actionable ideas for this exact topic, 1 sentence each, under 28 words.\nFollow both continuous guidance settings exactly.\nIf the topic is travel, an event, food, learning, life planning, or another everyday subject, keep it literal.\nDo not turn it into a product, startup, software tool, or student project unless explicitly requested.\nDo not prefix items with labels like "Idea 1:".\n${diversityDirective}\nReturn valid JSON only with one key named "ideas" whose value is an array of ${ideaCount} strings.`,
       },
     ];
   }
@@ -225,11 +225,11 @@ export function buildMessages({
       {
         role: 'system',
         content:
-          '你是一位通用头脑风暴助手，正在围绕一张工作板思考。工作板标题定义主要主题和意图，已有便签用于补充这个主题。已删除便签是明确排除项，不是隐藏上下文。题卡只是思考角度，绝不能替换主题。除非标题或便签明确要求，否则不要把主题变成产品、创业、软件工具或学生项目。只返回严格 JSON：{"ideas":["..."]}。不要 markdown。',
+          '你是一位通用头脑风暴助手，正在围绕一张工作板思考。工作板标题定义主要主题和意图，已有便签用于补充这个主题。已删除便签是明确排除项，不是隐藏上下文。用户输入是生成引导，绝不能替换主题。除非标题或便签明确要求，否则不要把主题变成产品、创业、软件工具或学生项目。只返回严格 JSON：{"ideas":["..."]}。不要 markdown。',
       },
       {
         role: 'user',
-        content: `工作板标题 / 主题：${topic || '未命名主题'}\n便签墙上已有的想法：\n${notesList}${hasDismissedNotes ? `\n\n已删除、不能再捡回来的想法：\n${dismissedList}` : ''}\n\n思考透镜：${prompt.title}\n透镜说明：${lensInstruction}\n发散引导：${divergenceDirective}\n具体程度引导：${specificityDirective}\n\n请生成 ${ideaCount} 条“下一步可继续展开”的新想法，要求：\n- 必须把工作板标题当作主主题，便签是有权重的补充上下文\n- 必须严格执行连续的发散引导，不要把发散程度粗暴当成低/中/高三档\n- 必须严格执行连续的具体程度引导，不要把具体程度粗暴当成低/中/高三档\n- 必须严格留在标题指向的现实领域内\n- 如果主题是旅行、活动、美食、学习、生活安排等日常话题，就直接围绕这个话题本身发散\n- 题卡只是一种思考角度，不能覆盖便签本身的主题\n- 便签影响力高时，要明显承接较强便签；便签影响力低时，便签只能作为轻量参考\n- 如果某条便签带有 “AI weight: 1-3”，数字越高，说明这条便签越重要，但仍要按便签影响力的比例使用\n- 如果某个概念出现在“已删除”列表里，就不要把它捡回来，不要改写重提，也不要生成近似变体\n- 除非标题或便签明确要求，否则不要生成产品、创业、软件工具或学生项目想法\n- 不要只是把现有便签换个说法重新写一遍\n- 每条都必须额外引入一个选项、细节、行动、限制、资源、路线、比较或变化，细节密度由具体程度控制\n- 所有想法彼此之间必须明显不同，不能都落在同一种解法上\n- 至少 ${surprisingCount} 条要有一点反直觉或让人眼前一亮，但仍然现实可做\n- 每条可执行，控制在 15-40 个汉字\n- 不要在内容前加“想法1：”这类编号前缀\n${diversityDirective}\n- 只返回合法 JSON，唯一键名为 "ideas"，值为 ${ideaCount} 个字符串组成的数组`,
+        content: `工作板标题 / 主题：${topic || '未命名主题'}\n便签墙上已有的想法：\n${notesList}${hasDismissedNotes ? `\n\n已删除、不能再捡回来的想法：\n${dismissedList}` : ''}\n\n用户输入标题：${prompt.title}\n用户输入内容：${lensInstruction}\n发散引导：${divergenceDirective}\n具体程度引导：${specificityDirective}\n\n请生成 ${ideaCount} 条“下一步可继续展开”的新想法，要求：\n- 必须把工作板标题当作主主题，便签是有权重的补充上下文\n- 必须严格执行连续的发散引导，不要把发散程度粗暴当成低/中/高三档\n- 必须严格执行连续的具体程度引导，不要把具体程度粗暴当成低/中/高三档\n- 必须严格留在标题指向的现实领域内\n- 如果主题是旅行、活动、美食、学习、生活安排等日常话题，就直接围绕这个话题本身发散\n- 用户输入只是生成引导，不能覆盖便签本身的主题\n- 便签影响力高时，要明显承接较强便签；便签影响力低时，便签只能作为轻量参考\n- 如果某条便签带有 “AI weight: 1-3”，数字越高，说明这条便签越重要，但仍要按便签影响力的比例使用\n- 如果某个概念出现在“已删除”列表里，就不要把它捡回来，不要改写重提，也不要生成近似变体\n- 除非标题或便签明确要求，否则不要生成产品、创业、软件工具或学生项目想法\n- 不要只是把现有便签换个说法重新写一遍\n- 每条都必须额外引入一个选项、细节、行动、限制、资源、路线、比较或变化，细节密度由具体程度控制\n- 所有想法彼此之间必须明显不同，不能都落在同一种解法上\n- 至少 ${surprisingCount} 条要有一点反直觉或让人眼前一亮，但仍然现实可做\n- 每条可执行，控制在 15-40 个汉字\n- 不要在内容前加“想法1：”这类编号前缀\n${diversityDirective}\n- 只返回合法 JSON，唯一键名为 "ideas"，值为 ${ideaCount} 个字符串组成的数组`,
       },
     ];
   }
@@ -239,11 +239,11 @@ export function buildMessages({
     {
       role: 'system',
       content:
-        '你是一位通用头脑风暴助手。工作板主题是主要上下文，题卡只是思考角度。已删除便签是明确排除项，不是隐藏上下文。除非主题明确要求，否则不要把主题变成产品、创业、软件工具或学生项目。只返回严格 JSON，格式为 {"ideas":["..."]}。不要 markdown。',
+        '你是一位通用头脑风暴助手。工作板主题是主要上下文，用户输入是生成引导。已删除便签是明确排除项，不是隐藏上下文。除非主题明确要求，否则不要把主题变成产品、创业、软件工具或学生项目。只返回严格 JSON，格式为 {"ideas":["..."]}。不要 markdown。',
     },
     {
       role: 'user',
-      content: `工作板主题：${topic}\n思考角度：${prompt.title}\n引导问题：${prompt.prompt}\n发散引导：${divergenceDirective}\n具体程度引导：${specificityDirective}${hasDismissedNotes ? `\n不要捡回这些已删除想法：\n${dismissedList}` : ''}\n请生成 ${ideaCount} 条严格围绕这个主题的可执行想法，每条 15-40 个汉字。\n必须同时遵守两个连续参数的引导。\n如果主题是旅行、活动、美食、学习、生活安排等日常话题，就直接围绕这个话题本身发散。\n除非主题明确要求，否则不要生成产品、创业、软件工具或学生项目想法。\n不要在内容前加“想法1：”这类编号前缀。\n${diversityDirective}\n只返回合法 JSON，唯一键名为 "ideas"，值为 ${ideaCount} 个字符串组成的数组。`,
+      content: `工作板主题：${topic}\n用户输入标题：${prompt.title}\n用户输入内容：${prompt.prompt}\n发散引导：${divergenceDirective}\n具体程度引导：${specificityDirective}${hasDismissedNotes ? `\n不要捡回这些已删除想法：\n${dismissedList}` : ''}\n请生成 ${ideaCount} 条严格围绕这个主题的可执行想法，每条 15-40 个汉字。\n必须同时遵守两个连续参数的引导。\n如果主题是旅行、活动、美食、学习、生活安排等日常话题，就直接围绕这个话题本身发散。\n除非主题明确要求，否则不要生成产品、创业、软件工具或学生项目想法。\n不要在内容前加“想法1：”这类编号前缀。\n${diversityDirective}\n只返回合法 JSON，唯一键名为 "ideas"，值为 ${ideaCount} 个字符串组成的数组。`,
     },
   ];
 }
@@ -254,6 +254,22 @@ function sanitizeIdeaText(value) {
     .replace(/^\s*idea\s*\d+\s*[:：.)、-]?\s*/i, '')
     .replace(/^\s*[-*•\d.)]+\s*/, '')
     .trim();
+}
+
+function expandIdeaCandidate(candidate) {
+  const raw = typeof candidate === 'string'
+    ? candidate
+    : String(candidate?.idea ?? candidate?.text ?? '');
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+
+  const numberedParts = trimmed
+    .split(/\n+\s*(?=(?:\d+|[一二三四五六七八九十]+)\s*[.、):：])/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (numberedParts.length > 1) return numberedParts;
+
+  return [trimmed];
 }
 
 export function parseIdeaPayload(content, { generationCount = DEFAULT_AI_GENERATION_COUNT } = {}) {
@@ -287,13 +303,11 @@ export function parseIdeaPayload(content, { generationCount = DEFAULT_AI_GENERAT
 
   const uniqueIdeas = [];
   for (const candidate of candidates) {
-    const normalized =
-      typeof candidate === 'string'
-        ? sanitizeIdeaText(candidate)
-        : sanitizeIdeaText(candidate?.idea ?? candidate?.text);
-
-    if (!normalized || uniqueIdeas.includes(normalized)) continue;
-    uniqueIdeas.push(normalized);
+    for (const expandedCandidate of expandIdeaCandidate(candidate)) {
+      const normalized = sanitizeIdeaText(expandedCandidate);
+      if (!normalized || uniqueIdeas.includes(normalized)) continue;
+      uniqueIdeas.push(normalized);
+    }
   }
 
   if (uniqueIdeas.length < Math.min(3, ideaCount)) {
@@ -344,7 +358,7 @@ export function normalizeIdeaGenerationPayload(payload) {
         payload: {
           ok: false,
           reason: 'missing_context',
-          message: 'A topic or prompt card is required.',
+          message: 'A topic or user prompt is required.',
         },
       },
     };
@@ -407,6 +421,16 @@ export function buildOllamaChatPayload({
       generationCount: ideaCount,
     }),
   };
+}
+
+export function formatMessagesForDisplay(messages = []) {
+  return messages
+    .map((message) => {
+      const role = String(message?.role ?? 'message').toUpperCase();
+      const content = String(message?.content ?? '').trim();
+      return `[${role}]\n${content}`;
+    })
+    .join('\n\n---\n\n');
 }
 
 export async function generateIdeas({
