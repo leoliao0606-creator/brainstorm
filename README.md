@@ -15,7 +15,9 @@ Instead of replacing the user's thinking, the AI works like a brainstorming part
 - Built-in prompt cards plus local AI generation through Ollama
 - Adjustable AI divergence, from more focused to more exploratory
 - AI model settings in the UI for Ollama model, base URL, generation count, and output language
+- Streamed AI output with the final server prompt visible for debugging
 - Undo for note deletion, note archiving, and import overwrite
+- Undo for note creation, editing, movement, pinning, voting, color changes, AI weighting, board settings, and AI generation
 - Adjustable note font size in the board UI
 - Direct note editing without an edit mode button
 - Filter and sort by scope, tag, keyword, recency, votes, and tag
@@ -52,6 +54,21 @@ Environment variables still provide the server defaults:
 export OLLAMA_MODEL=gemma4:e4b-it-q4_K_M
 export OLLAMA_BASE_URL=http://127.0.0.1:11434
 npm run dev
+```
+
+By default the API only forwards Ollama requests to localhost, loopback, private network IPs, or `.local` hosts. To intentionally use a remote Ollama endpoint, opt in explicitly:
+
+```bash
+export ALLOW_REMOTE_OLLAMA=1
+export OLLAMA_BASE_URL=https://your-ollama-host.example
+npm run dev
+```
+
+You can also tune upstream request timeouts:
+
+```bash
+export OLLAMA_STATUS_TIMEOUT_MS=5000
+export OLLAMA_GENERATION_TIMEOUT_MS=120000
 ```
 
 ## Production Mode

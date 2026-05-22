@@ -1,9 +1,23 @@
-const DEFAULT_AI_DIVERGENCE = 55;
-const DEFAULT_AI_SPECIFICITY = 70;
-const DEFAULT_AI_GENERATION_COUNT = 5;
-const MIN_AI_GENERATION_COUNT = 1;
-const MAX_AI_GENERATION_COUNT = 10;
-const MAX_DISMISSED_NOTES = 12;
+import {
+  DEFAULT_AI_DIVERGENCE,
+  DEFAULT_AI_GENERATION_COUNT,
+  DEFAULT_AI_SPECIFICITY,
+  MAX_AI_DISMISSED_NOTES,
+  normalizeAiDivergence,
+  normalizeAiGenerationCount,
+  normalizeAiSpecificity,
+  normalizeDismissedNotes as normalizeDismissedNotesCore,
+  normalizeIdeaFingerprint,
+  normalizeLanguage,
+} from '../shared/aiCore.js';
+
+export {
+  normalizeAiDivergence,
+  normalizeAiGenerationCount,
+  normalizeAiSpecificity,
+  normalizeIdeaFingerprint,
+  normalizeLanguage,
+};
 
 const LENS_BY_ID = {
   en: {
@@ -35,47 +49,8 @@ const TITLE_TO_ID = {
   马上能做什么: 'next-actions',
 };
 
-export function normalizeLanguage(language) {
-  return language === 'en' ? 'en' : 'zh';
-}
-
-export function normalizeAiDivergence(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return DEFAULT_AI_DIVERGENCE;
-  return Math.max(0, Math.min(100, Math.round(parsed)));
-}
-
-export function normalizeAiSpecificity(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return DEFAULT_AI_SPECIFICITY;
-  return Math.max(0, Math.min(100, Math.round(parsed)));
-}
-
-export function normalizeAiGenerationCount(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return DEFAULT_AI_GENERATION_COUNT;
-  return Math.max(MIN_AI_GENERATION_COUNT, Math.min(MAX_AI_GENERATION_COUNT, Math.round(parsed)));
-}
-
-export function normalizeIdeaFingerprint(value) {
-  return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
-}
-
 export function normalizeDismissedNotes(rawDismissedNotes) {
-  if (!Array.isArray(rawDismissedNotes)) return [];
-
-  const uniqueNotes = [];
-  const seen = new Set();
-
-  rawDismissedNotes.forEach((entry) => {
-    const text = String(entry ?? '').trim();
-    const fingerprint = normalizeIdeaFingerprint(text);
-    if (!fingerprint || seen.has(fingerprint)) return;
-    seen.add(fingerprint);
-    uniqueNotes.push(text);
-  });
-
-  return uniqueNotes.slice(-MAX_DISMISSED_NOTES);
+  return normalizeDismissedNotesCore(rawDismissedNotes, MAX_AI_DISMISSED_NOTES);
 }
 
 function formatNoteEntry(n, i) {
@@ -91,13 +66,19 @@ export function buildLensInstruction({ language, prompt }) {
   const normalizedLanguage = normalizeLanguage(language);
   const id = String(prompt?.id ?? TITLE_TO_ID[String(prompt?.title ?? '').trim()] ?? '').trim();
   const lensInstruction = LENS_BY_ID[normalizedLanguage]?.[id];
+  const customPrompt = String(prompt?.prompt ?? '').trim();
+  if (lensInstruction && customPrompt) {
+    return normalizedLanguage === 'en'
+      ? `${lensInstruction}\nAdditional user context: ${customPrompt}`
+      : `${lensInstruction}\n用户补充上下文：${customPrompt}`;
+  }
   if (lensInstruction) return lensInstruction;
 
   if (normalizedLanguage === 'en') {
-    return String(prompt?.prompt ?? '').trim() || 'Use the user prompt to expand the current board without changing its domain or intent.';
+    return customPrompt || 'Use the user prompt to expand the current board without changing its domain or intent.';
   }
 
-  return String(prompt?.prompt ?? '').trim() || '请根据用户输入扩展当前便签墙，但不要改变主题领域或意图。';
+  return customPrompt || '请根据用户输入扩展当前便签墙，但不要改变主题领域或意图。';
 }
 
 function buildDivergenceInstructions(language) {
@@ -213,7 +194,7 @@ export function buildMessages({
       },
       {
         role: 'user',
-        content: `Board topic: ${topic}\nUser prompt title: ${prompt.title}\nUser prompt: ${prompt.prompt}\nDivergence guidance: ${divergenceDirective}\nSpecificity guidance: ${specificityDirective}${hasDismissedNotes ? `\nAvoid reviving these removed ideas:\n${dismissedList}` : ''}\nGenerate ${ideaCount} actionable ideas for this exact topic, 1 sentence each, under 28 words.\nFollow both continuous guidance settings exactly.\nIf the topic is travel, an event, food, learning, life planning, or another everyday subject, keep it literal.\nDo not turn it into a product, startup, software tool, or student project unless explicitly requested.\nDo not prefix items with labels like "Idea 1:".\n${diversityDirective}\nReturn valid JSON only with one key named "ideas" whose value is an array of ${ideaCount} strings.`,
+        content: `Board topic: ${topic}\nUser prompt title: ${prompt.title}\nUser prompt: ${lensInstruction}\nDivergence guidance: ${divergenceDirective}\nSpecificity guidance: ${specificityDirective}${hasDismissedNotes ? `\nAvoid reviving these removed ideas:\n${dismissedList}` : ''}\nGenerate ${ideaCount} actionable ideas for this exact topic, 1 sentence each, under 28 words.\nFollow both continuous guidance settings exactly.\nIf the topic is travel, an event, food, learning, life planning, or another everyday subject, keep it literal.\nDo not turn it into a product, startup, software tool, or student project unless explicitly requested.\nDo not prefix items with labels like "Idea 1:".\n${diversityDirective}\nReturn valid JSON only with one key named "ideas" whose value is an array of ${ideaCount} strings.`,
       },
     ];
   }
@@ -243,7 +224,7 @@ export function buildMessages({
     },
     {
       role: 'user',
-      content: `工作板主题：${topic}\n用户输入标题：${prompt.title}\n用户输入内容：${prompt.prompt}\n发散引导：${divergenceDirective}\n具体程度引导：${specificityDirective}${hasDismissedNotes ? `\n不要捡回这些已删除想法：\n${dismissedList}` : ''}\n请生成 ${ideaCount} 条严格围绕这个主题的可执行想法，每条 15-40 个汉字。\n必须同时遵守两个连续参数的引导。\n如果主题是旅行、活动、美食、学习、生活安排等日常话题，就直接围绕这个话题本身发散。\n除非主题明确要求，否则不要生成产品、创业、软件工具或学生项目想法。\n不要在内容前加“想法1：”这类编号前缀。\n${diversityDirective}\n只返回合法 JSON，唯一键名为 "ideas"，值为 ${ideaCount} 个字符串组成的数组。`,
+      content: `工作板主题：${topic}\n用户输入标题：${prompt.title}\n用户输入内容：${lensInstruction}\n发散引导：${divergenceDirective}\n具体程度引导：${specificityDirective}${hasDismissedNotes ? `\n不要捡回这些已删除想法：\n${dismissedList}` : ''}\n请生成 ${ideaCount} 条严格围绕这个主题的可执行想法，每条 15-40 个汉字。\n必须同时遵守两个连续参数的引导。\n如果主题是旅行、活动、美食、学习、生活安排等日常话题，就直接围绕这个话题本身发散。\n除非主题明确要求，否则不要生成产品、创业、软件工具或学生项目想法。\n不要在内容前加“想法1：”这类编号前缀。\n${diversityDirective}\n只返回合法 JSON，唯一键名为 "ideas"，值为 ${ideaCount} 个字符串组成的数组。`,
     },
   ];
 }

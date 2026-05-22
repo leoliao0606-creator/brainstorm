@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, RefreshCw, Save, X } from 'lucide-react';
 import {
   MAX_AI_GENERATION_COUNT,
@@ -20,6 +20,45 @@ export function AiSettingsModal({
   const copy = getLocale(language).text.aiSettings;
   const modelOptions = [...new Set([draft.ollamaModel, ...installedModels].filter(Boolean))];
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const dialogRef = useRef(null);
+  const closeButtonRef = useRef(null);
+  const previousFocusRef = useRef(null);
+
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeButtonRef.current?.focus({ preventScroll: true });
+
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+
+      const focusable = dialogRef.current.querySelectorAll(
+        'a[href], button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])'
+      );
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) return;
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      previousFocusRef.current?.focus?.({ preventScroll: true });
+    };
+  }, [onClose]);
 
   function updateDraft(field, value) {
     onDraftChange({ ...draft, [field]: value });
@@ -38,13 +77,13 @@ export function AiSettingsModal({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="ai-settings-title">
+      <section ref={dialogRef} className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="ai-settings-title">
         <header className="settings-dialog__header">
           <div>
             <span className="eyebrow">{copy.eyebrow}</span>
             <h2 id="ai-settings-title" className="settings-dialog__title">{copy.title}</h2>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label={copy.close} title={copy.close}>
+          <button ref={closeButtonRef} className="icon-button" type="button" onClick={onClose} aria-label={copy.close} title={copy.close}>
             <X size={17} />
           </button>
         </header>

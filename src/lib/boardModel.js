@@ -1,8 +1,21 @@
 import { createId } from './ids.js';
 import { DEFAULT_LANGUAGE, getLocale } from './locale.js';
+import {
+  DEFAULT_AI_DIVERGENCE,
+  DEFAULT_AI_SPECIFICITY,
+  normalizeAiDivergence,
+  normalizeAiSpecificity,
+  normalizeDismissedNotes as normalizeDismissedNotesCore,
+  normalizeIdeaFingerprint,
+} from '../../shared/aiCore.js';
 
-export const DEFAULT_AI_DIVERGENCE = 55;
-export const DEFAULT_AI_SPECIFICITY = 70;
+export {
+  DEFAULT_AI_DIVERGENCE,
+  DEFAULT_AI_SPECIFICITY,
+  normalizeAiDivergence,
+  normalizeAiSpecificity,
+};
+
 export const DEFAULT_NOTE_FONT_SCALE = 1.12;
 export const MAX_AI_WEIGHT = 3;
 export const MAX_DISMISSED_NOTES = 24;
@@ -31,18 +44,6 @@ export function normalizeAiWeight(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 0;
   return Math.max(0, Math.min(MAX_AI_WEIGHT, Math.round(parsed)));
-}
-
-export function normalizeAiDivergence(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return DEFAULT_AI_DIVERGENCE;
-  return Math.max(0, Math.min(100, Math.round(parsed)));
-}
-
-export function normalizeAiSpecificity(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return DEFAULT_AI_SPECIFICITY;
-  return Math.max(0, Math.min(100, Math.round(parsed)));
 }
 
 export function normalizeNoteFontScale(value) {
@@ -92,24 +93,11 @@ export function normalizeGenerationState(state) {
 }
 
 export function normalizeNoteFingerprint(value) {
-  return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  return normalizeIdeaFingerprint(value);
 }
 
 export function normalizeDismissedNotes(rawDismissedNotes) {
-  if (!Array.isArray(rawDismissedNotes)) return [];
-
-  const uniqueNotes = [];
-  const seen = new Set();
-
-  rawDismissedNotes.forEach((entry) => {
-    const text = normalizeText(entry).trim();
-    const fingerprint = normalizeNoteFingerprint(text);
-    if (!fingerprint || seen.has(fingerprint)) return;
-    seen.add(fingerprint);
-    uniqueNotes.push(text);
-  });
-
-  return uniqueNotes.slice(-MAX_DISMISSED_NOTES);
+  return normalizeDismissedNotesCore(rawDismissedNotes, MAX_DISMISSED_NOTES);
 }
 
 function inferNoteSource(rawSource, author) {
@@ -303,4 +291,32 @@ export function computeTopTag(notes) {
     }
   });
   return best;
+}
+
+export function mergeBoards(currentBoard, incomingBoard, language = DEFAULT_LANGUAGE) {
+  if (!currentBoard) return normalizeBoard(incomingBoard, language, { dropGeneratingNotes: true });
+  if (!incomingBoard) return normalizeBoard(currentBoard, language, { dropGeneratingNotes: true });
+
+  const current = normalizeBoard(currentBoard, language, { dropGeneratingNotes: true });
+  const incoming = normalizeBoard(incomingBoard, language, { dropGeneratingNotes: true });
+  const currentIsNewer = current.updatedAt > incoming.updatedAt;
+  const metadataSource = currentIsNewer ? current : incoming;
+  const notesById = new Map(current.notes.map((note) => [note.id, note]));
+
+  incoming.notes.forEach((incomingNote) => {
+    const currentNote = notesById.get(incomingNote.id);
+    if (!currentNote || incomingNote.updatedAt >= currentNote.updatedAt) {
+      notesById.set(incomingNote.id, incomingNote);
+    }
+  });
+
+  return {
+    ...metadataSource,
+    dismissedNotes: normalizeDismissedNotes([
+      ...(current.dismissedNotes ?? []),
+      ...(incoming.dismissedNotes ?? []),
+    ]),
+    notes: [...notesById.values()].sort((a, b) => b.updatedAt - a.updatedAt),
+    updatedAt: Math.max(current.updatedAt, incoming.updatedAt),
+  };
 }

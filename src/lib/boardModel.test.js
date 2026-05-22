@@ -3,6 +3,7 @@ import {
   createNote,
   deleteNote,
   getDefaultNotePosition,
+  mergeBoards,
   normalizeBoard,
   normalizeDismissedNotes,
   normalizeNoteColor,
@@ -94,5 +95,30 @@ describe('boardModel', () => {
     const board = { title: 'Topic', dismissedNotes: [], notes: [generating] };
 
     expect(deleteNote(board, generating.id).dismissedNotes).toEqual([]);
+  });
+
+  it('merges older cross-tab boards without overwriting newer local note edits', () => {
+    const merged = mergeBoards({
+      title: 'Local',
+      updatedAt: 30,
+      dismissedNotes: ['Old'],
+      notes: [
+        { id: 'same', text: 'Local edit', updatedAt: 25, createdAt: 1 },
+        { id: 'local-only', text: 'Local note', updatedAt: 22, createdAt: 2 },
+      ],
+    }, {
+      title: 'Incoming',
+      updatedAt: 20,
+      dismissedNotes: ['Incoming'],
+      notes: [
+        { id: 'same', text: 'Older edit', updatedAt: 10, createdAt: 1 },
+        { id: 'incoming-only', text: 'Incoming note', updatedAt: 18, createdAt: 3 },
+      ],
+    }, 'en');
+
+    expect(merged.title).toBe('Local');
+    expect(merged.dismissedNotes).toEqual(['Old', 'Incoming']);
+    expect(merged.notes.map((note) => note.id)).toContain('incoming-only');
+    expect(merged.notes.find((note) => note.id === 'same').text).toBe('Local edit');
   });
 });

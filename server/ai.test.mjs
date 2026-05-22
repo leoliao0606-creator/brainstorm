@@ -22,6 +22,16 @@ describe('server ai helpers', () => {
     })).toContain('具体行动');
   });
 
+  it('combines built-in lens guidance with custom user context', () => {
+    const instruction = buildLensInstruction({
+      language: 'en',
+      prompt: { id: 'spot-risks', prompt: 'Focus on budget and timing.' },
+    });
+
+    expect(instruction).toContain('risks');
+    expect(instruction).toContain('budget and timing');
+  });
+
   it('includes id-derived lens guidance in generated messages', () => {
     const messages = buildMessages({
       language: 'en',

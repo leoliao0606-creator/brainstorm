@@ -44,7 +44,17 @@ export async function requestIdeaGenerationStream(payload, { signal, onEvent } =
 
   function handleLine(line) {
     if (!line.trim()) return;
-    const event = JSON.parse(line);
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      finalPayload = {
+        type: 'error',
+        reason: 'invalid_stream_event',
+        message: 'The AI stream returned an invalid event.',
+      };
+      return;
+    }
     onEvent?.(event);
     if (event.type === 'done' || event.type === 'error') {
       finalPayload = event;

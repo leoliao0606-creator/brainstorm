@@ -1,5 +1,10 @@
+import {
+  DEFAULT_LANGUAGE as SHARED_DEFAULT_LANGUAGE,
+  normalizeLanguage as normalizeCoreLanguage,
+} from '../../shared/aiCore.js';
+
 export const LANGUAGE_KEY = 'brainstorm:studio:language';
-export const DEFAULT_LANGUAGE = 'zh';
+export const DEFAULT_LANGUAGE = SHARED_DEFAULT_LANGUAGE;
 
 const LOCALE_CONFIG = {
   zh: {
@@ -11,6 +16,43 @@ const LOCALE_CONFIG = {
       owner: '我',
     },
     tagSuggestions: ['想法', '问题', '计划', '资源', '风险', '行动', '其他'],
+    promptCards: [
+      {
+        id: 'explore-options',
+        title: '还有哪些可能',
+        description: '拓展更多可选方向',
+        prompt: '围绕当前主题补充更多具体选项，尽量覆盖不同路径。',
+        tag: '想法',
+      },
+      {
+        id: 'clarify-context',
+        title: '哪些条件会改变答案',
+        description: '找出关键限制和偏好',
+        prompt: '指出哪些条件、限制、偏好或缺失事实会影响下一步判断。',
+        tag: '问题',
+      },
+      {
+        id: 'find-resources',
+        title: '可以借助什么',
+        description: '补充资源、工具和信息源',
+        prompt: '列出能帮助推进这个主题的资源、工具、人物、地点或信息来源。',
+        tag: '资源',
+      },
+      {
+        id: 'spot-risks',
+        title: '哪里可能踩坑',
+        description: '提前暴露风险和取舍',
+        prompt: '找出当前主题里容易忽略的风险、错误假设、取舍和备选方案。',
+        tag: '风险',
+      },
+      {
+        id: 'next-actions',
+        title: '马上能做什么',
+        description: '转成下一步行动',
+        prompt: '把当前主题转成可以马上查询、询问、准备、比较、测试或决定的行动。',
+        tag: '行动',
+      },
+    ],
     text: {
       documentTitle: 'Brainstorm Studio | 头脑风暴工作板',
       documentDescription: '适合旅行、学习、活动、生活安排和项目讨论的通用头脑风暴工具。',
@@ -40,6 +82,16 @@ const LOCALE_CONFIG = {
         restore: '恢复便签',
         import: '导入覆盖',
         move: '移动便签',
+        add: '新增便签',
+        edit: '编辑便签',
+        vote: '调整投票',
+        weight: '调整 AI 权重',
+        color: '调整颜色',
+        pin: '置顶便签',
+        unpin: '取消置顶',
+        prompt: '贴上输入',
+        generate: 'AI 生成',
+        boardSetting: '调整工作板设置',
       },
       aiSettings: {
         button: 'AI 设置',
@@ -181,8 +233,10 @@ const LOCALE_CONFIG = {
       },
       notices: {
         sync: '已同步其他标签页里的最新内容。',
+        syncMerged: '已合并其他标签页里的更新，当前较新的编辑已保留。',
         syncReset: '共享板已被清空，当前视图已重置。',
         syncInvalid: '收到了一份损坏的同步数据，已忽略。',
+        saveFailed: '保存失败，可能是浏览器存储空间不足或被禁用。',
         added: '新便签已贴到墙上。',
         generated: (model, count) => `${model} 补充了 ${count} 条新想法。`,
         promptPinned: '自定义内容已贴到墙上。',
@@ -224,6 +278,43 @@ const LOCALE_CONFIG = {
       owner: 'Me',
     },
     tagSuggestions: ['Idea', 'Question', 'Plan', 'Resource', 'Risk', 'Action', 'Other'],
+    promptCards: [
+      {
+        id: 'explore-options',
+        title: 'What Else Is Possible',
+        description: 'Expand concrete options',
+        prompt: 'Add more concrete options for the current topic while covering different paths.',
+        tag: 'Idea',
+      },
+      {
+        id: 'clarify-context',
+        title: 'What Conditions Change The Answer',
+        description: 'Find constraints and preferences',
+        prompt: 'Identify the conditions, constraints, preferences, or missing facts that would affect the next decision.',
+        tag: 'Question',
+      },
+      {
+        id: 'find-resources',
+        title: 'What Can Help',
+        description: 'Suggest resources and inputs',
+        prompt: 'List resources, tools, people, places, or information sources that could help move this topic forward.',
+        tag: 'Resource',
+      },
+      {
+        id: 'spot-risks',
+        title: 'Where Could This Go Wrong',
+        description: 'Surface risks and tradeoffs',
+        prompt: 'Find overlooked risks, weak assumptions, tradeoffs, and fallback options in the current topic.',
+        tag: 'Risk',
+      },
+      {
+        id: 'next-actions',
+        title: 'What Can Happen Now',
+        description: 'Turn it into next actions',
+        prompt: 'Turn the current topic into actions someone can search, ask, prepare, compare, test, or decide now.',
+        tag: 'Action',
+      },
+    ],
     text: {
       documentTitle: 'Brainstorm Studio | Brainstorm Board',
       documentDescription: 'A general brainstorming tool for travel, learning, events, life planning, and project discussions.',
@@ -253,6 +344,16 @@ const LOCALE_CONFIG = {
         restore: 'restore note',
         import: 'import overwrite',
         move: 'move note',
+        add: 'add note',
+        edit: 'edit note',
+        vote: 'adjust votes',
+        weight: 'adjust AI weight',
+        color: 'adjust color',
+        pin: 'pin note',
+        unpin: 'unpin note',
+        prompt: 'pin input',
+        generate: 'AI generation',
+        boardSetting: 'adjust board setting',
       },
       aiSettings: {
         button: 'AI Settings',
@@ -394,8 +495,10 @@ const LOCALE_CONFIG = {
       },
       notices: {
         sync: 'Synced the latest board state from another tab.',
+        syncMerged: 'Merged updates from another tab while keeping newer local edits.',
         syncReset: 'The shared board was cleared, so this view has been reset.',
         syncInvalid: 'Ignored a corrupted board payload from storage sync.',
+        saveFailed: 'Save failed. Browser storage may be full or disabled.',
         added: 'Note posted to the wall.',
         generated: (model, count) => `${model} added ${count} new idea${count === 1 ? '' : 's'}.`,
         promptPinned: 'Custom input pinned to the wall.',
@@ -431,7 +534,7 @@ const LOCALE_CONFIG = {
 };
 
 export function normalizeLanguage(language) {
-  return language === 'en' ? 'en' : DEFAULT_LANGUAGE;
+  return normalizeCoreLanguage(language);
 }
 
 export function getLocale(language) {

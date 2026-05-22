@@ -1,5 +1,6 @@
 import http from 'node:http';
 import path from 'node:path';
+import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { readFile, stat } from 'node:fs/promises';
 import {
@@ -10,14 +11,23 @@ import {
   normalizeIdeaGenerationPayload,
   parseIdeaPayload,
 } from './server/ai.mjs';
+import {
+  DEFAULT_OLLAMA_BASE_URL as SHARED_DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_OLLAMA_MODEL as SHARED_DEFAULT_OLLAMA_MODEL,
+  normalizeOllamaBaseUrl,
+  normalizeOllamaModel,
+} from './shared/aiCore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, 'dist');
 const HOST = process.env.HOST ?? '127.0.0.1';
 const PORT = Number(process.env.PORT ?? 8787);
-const DEFAULT_OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434';
-const DEFAULT_OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? 'gemma4:e4b-it-q4_K_M';
+const DEFAULT_OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? SHARED_DEFAULT_OLLAMA_BASE_URL;
+const DEFAULT_OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? SHARED_DEFAULT_OLLAMA_MODEL;
 const MAX_BODY_SIZE = 1024 * 1024;
+const ALLOW_REMOTE_OLLAMA = process.env.ALLOW_REMOTE_OLLAMA === '1';
+const OLLAMA_STATUS_TIMEOUT_MS = Number(process.env.OLLAMA_STATUS_TIMEOUT_MS ?? 5000);
+const OLLAMA_GENERATION_TIMEOUT_MS = Number(process.env.OLLAMA_GENERATION_TIMEOUT_MS ?? 120000);
 
 const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
@@ -48,6 +58,54 @@ function sendText(response, statusCode, text) {
   response.end(text);
 }
 
+function isPrivateOllamaHost(hostname) {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1') return true;
+
+  if (net.isIP(normalized) === 4) {
+    const [a, b] = normalized.split('.').map(Number);
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  }
+
+  if (net.isIP(normalized) === 6) {
+    return normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd');
+  }
+
+  return normalized.endsWith('.local');
+}
+
+function assertAllowedOllamaBaseUrl(baseUrl) {
+  if (ALLOW_REMOTE_OLLAMA) return null;
+
+  try {
+    const parsed = new URL(baseUrl);
+    if (isPrivateOllamaHost(parsed.hostname)) return null;
+  } catch {
+    // The URL was already normalized, but keep this defensive for future changes.
+  }
+
+  return {
+    ok: false,
+    reason: 'remote_ollama_blocked',
+    message: 'Remote Ollama URLs are disabled by default. Set ALLOW_REMOTE_OLLAMA=1 to allow them.',
+  };
+}
+
+function fetchWithTimeout(resource, options = {}, timeoutMs = OLLAMA_GENERATION_TIMEOUT_MS) {
+  const timeoutController = new AbortController();
+  const timer = setTimeout(() => timeoutController.abort(new Error('Ollama request timed out.')), timeoutMs);
+
+  if (options.signal) {
+    if (options.signal.aborted) {
+      timeoutController.abort(options.signal.reason);
+    } else {
+      options.signal.addEventListener('abort', () => timeoutController.abort(options.signal.reason), { once: true });
+    }
+  }
+
+  return fetch(resource, { ...options, signal: timeoutController.signal }).finally(() => clearTimeout(timer));
+}
+
 async function readRequestBody(request) {
   const chunks = [];
   let size = 0;
@@ -63,26 +121,13 @@ async function readRequestBody(request) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-function normalizeOllamaBaseUrl(value) {
-  const raw = String(value ?? '').trim();
-  if (!raw) return DEFAULT_OLLAMA_BASE_URL;
-
-  try {
-    const parsed = new URL(raw);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return DEFAULT_OLLAMA_BASE_URL;
-    }
-    return parsed.href.replace(/\/+$/, '');
-  } catch {
-    return DEFAULT_OLLAMA_BASE_URL;
-  }
-}
-
 function normalizeOllamaRuntimeSettings(payload = {}) {
-  return {
-    ollamaBaseUrl: normalizeOllamaBaseUrl(payload.ollamaBaseUrl ?? payload.baseUrl ?? DEFAULT_OLLAMA_BASE_URL),
-    ollamaModel: String(payload.ollamaModel ?? payload.model ?? DEFAULT_OLLAMA_MODEL).trim() || DEFAULT_OLLAMA_MODEL,
+  const runtime = {
+    ollamaBaseUrl: normalizeOllamaBaseUrl(payload.ollamaBaseUrl ?? payload.baseUrl ?? DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_BASE_URL),
+    ollamaModel: normalizeOllamaModel(payload.ollamaModel ?? payload.model ?? DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_MODEL),
   };
+  const blocked = assertAllowedOllamaBaseUrl(runtime.ollamaBaseUrl);
+  return blocked ? { ok: false, ...blocked, runtime } : { ok: true, runtime };
 }
 
 async function readJsonBody(request) {
@@ -107,12 +152,25 @@ async function handleStatus(request, response, overrides = {}) {
     }
   }
 
-  const runtime = normalizeOllamaRuntimeSettings(payload);
+  const runtimeResult = normalizeOllamaRuntimeSettings(payload);
+  const runtime = runtimeResult.runtime;
+  if (!runtimeResult.ok) {
+    sendJson(response, 400, {
+      ok: false,
+      available: false,
+      reason: runtimeResult.reason,
+      model: runtime.ollamaModel,
+      baseUrl: runtime.ollamaBaseUrl,
+      message: runtimeResult.message,
+    });
+    return;
+  }
 
   try {
     const status = await fetchOllamaStatus({
       ollamaBaseUrl: runtime.ollamaBaseUrl,
       ollamaModel: runtime.ollamaModel,
+      fetchImpl: (resource, options) => fetchWithTimeout(resource, options, OLLAMA_STATUS_TIMEOUT_MS),
     });
     sendJson(response, 200, {
       ok: true,
@@ -154,12 +212,25 @@ async function handleIdeaGeneration(request, response) {
     return;
   }
 
-  const runtime = normalizeOllamaRuntimeSettings(payload);
+  const runtimeResult = normalizeOllamaRuntimeSettings(payload);
+  const runtime = runtimeResult.runtime;
+  if (!runtimeResult.ok) {
+    sendJson(response, 400, {
+      ok: false,
+      available: false,
+      reason: runtimeResult.reason,
+      model: runtime.ollamaModel,
+      baseUrl: runtime.ollamaBaseUrl,
+      message: runtimeResult.message,
+    });
+    return;
+  }
 
   try {
     const status = await fetchOllamaStatus({
       ollamaBaseUrl: runtime.ollamaBaseUrl,
       ollamaModel: runtime.ollamaModel,
+      fetchImpl: (resource, options) => fetchWithTimeout(resource, options, OLLAMA_STATUS_TIMEOUT_MS),
     });
     if (!status.available) {
       sendJson(response, 503, {
@@ -177,6 +248,7 @@ async function handleIdeaGeneration(request, response) {
     const ideas = await generateIdeas({
       ollamaBaseUrl: runtime.ollamaBaseUrl,
       ollamaModel: runtime.ollamaModel,
+      fetchImpl: (resource, options) => fetchWithTimeout(resource, options, OLLAMA_GENERATION_TIMEOUT_MS),
       ...normalized.value,
     });
     sendJson(response, 200, {
@@ -221,12 +293,25 @@ async function handleIdeaGenerationStream(request, response) {
     return;
   }
 
-  const runtime = normalizeOllamaRuntimeSettings(payload);
+  const runtimeResult = normalizeOllamaRuntimeSettings(payload);
+  const runtime = runtimeResult.runtime;
+  if (!runtimeResult.ok) {
+    sendJson(response, 400, {
+      ok: false,
+      available: false,
+      reason: runtimeResult.reason,
+      model: runtime.ollamaModel,
+      baseUrl: runtime.ollamaBaseUrl,
+      message: runtimeResult.message,
+    });
+    return;
+  }
 
   try {
     const status = await fetchOllamaStatus({
       ollamaBaseUrl: runtime.ollamaBaseUrl,
       ollamaModel: runtime.ollamaModel,
+      fetchImpl: (resource, options) => fetchWithTimeout(resource, options, OLLAMA_STATUS_TIMEOUT_MS),
     });
 
     if (!status.available) {
@@ -257,14 +342,14 @@ async function handleIdeaGenerationStream(request, response) {
       stream: true,
     });
 
-    const upstreamResponse = await fetch(`${runtime.ollamaBaseUrl}/api/chat`, {
+    const upstreamResponse = await fetchWithTimeout(`${runtime.ollamaBaseUrl}/api/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       signal: upstreamController.signal,
       body: JSON.stringify(chatPayload),
-    });
+    }, OLLAMA_GENERATION_TIMEOUT_MS);
 
     if (!upstreamResponse.ok) {
       const detail = await upstreamResponse.text();

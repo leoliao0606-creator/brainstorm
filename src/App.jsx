@@ -10,26 +10,19 @@ import {
   useState,
 } from 'react';
 import {
-  ArrowLeft,
-  Download,
   LocateFixed,
-  MessageSquareText,
-  Plus,
   RefreshCw,
-  Settings,
-  Square,
   Undo2,
-  Upload,
-  Users,
-  WandSparkles,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
 import { AiSettingsModal } from './components/AiSettingsModal.jsx';
+import { BoardBottomPanels } from './components/BoardBottomPanels.jsx';
+import { BoardSidebar } from './components/BoardSidebar.jsx';
+import { BoardTopbar } from './components/BoardTopbar.jsx';
 import { CollapsibleSection } from './components/CollapsibleSection.jsx';
 import { NoteCard } from './components/NoteCard.jsx';
 import { ProjectsHome } from './components/ProjectsHome.jsx';
-import { StatCard } from './components/StatCard.jsx';
 import {
   AI_REVEAL_STEP_MS,
   DEFAULT_AI_DIVERGENCE,
@@ -41,6 +34,7 @@ import {
   createNote,
   deleteNote,
   getDefaultNotePosition,
+  mergeBoards,
   normalizeAiDivergence,
   normalizeAiSpecificity,
   normalizeAiWeight,
@@ -80,7 +74,6 @@ import {
   persistLanguage,
   remapSuggestedTag,
 } from './lib/locale.js';
-import { formatClock } from './lib/formatters.js';
 import { downloadBoard } from './lib/ui.js';
 import './App.css';
 
@@ -151,13 +144,27 @@ function snapCanvasPosition(value) {
   return Math.round(value / 8) * 8;
 }
 
+function createDefaultAiPromptDraft(language) {
+  const locale = getLocale(language);
+  const promptCard = locale.promptCards[0];
+  return {
+    text: '',
+    tag: promptCard?.tag ?? locale.tagSuggestions[0],
+    lensId: promptCard?.id ?? 'custom',
+  };
+}
+
+function findPromptCard(locale, lensId) {
+  return locale.promptCards.find((card) => card.id === lensId) ?? locale.promptCards[0] ?? null;
+}
+
 function App() {
   const [language, setLanguage] = useState(loadLanguage);
   const [projects, setProjects] = useState(() => loadProjects(language));
   const [activeProjectId, setActiveProjectId] = useState(null);
   const [board, setBoard] = useState(null);
   const [composer, setComposer] = useState({ text: '', tag: '' });
-  const [aiPromptDraft, setAiPromptDraft] = useState(() => ({ text: '', tag: getLocale(language).tagSuggestions[0] }));
+  const [aiPromptDraft, setAiPromptDraft] = useState(() => createDefaultAiPromptDraft(language));
   const [sidebarTab, setSidebarTab] = useState('capture');
   const [filters, setFilters] = useState({ scope: 'active', tag: 'all', sort: 'recent', search: '' });
   const [notice, setNotice] = useState(null);
@@ -190,6 +197,7 @@ function App() {
   const canvasInitialScrollRef = useRef(null);
   const spacePressedRef = useRef(false);
   const suppressCanvasContextMenuRef = useRef(false);
+  const boardSettingUndoRef = useRef({ key: '', at: 0 });
   const [dragPreview, setDragPreview] = useState(null);
   const [canvasZoom, setCanvasZoom] = useState(CANVAS_ZOOM_DEFAULT);
   const [canvasViewportSize, setCanvasViewportSize] = useState({ width: 0, height: 0 });
@@ -198,6 +206,7 @@ function App() {
 
   const locale = getLocale(language);
   const text = locale.text;
+  const selectedPromptCard = findPromptCard(locale, aiPromptDraft.lensId);
   const fallbackModelName = aiAssist.model ?? aiSettings.ollamaModel;
   const aiGenerationCount = normalizeAiGenerationCount(aiSettings.generationCount);
   const aiLanguage = resolveAiLanguagePreference(aiSettings.languagePreference, language);
@@ -274,6 +283,15 @@ function App() {
 
   function clearUndoStack() {
     setUndoStack([]);
+  }
+
+  function recordBoardSettingUndo(key, sourceBoard = board) {
+    const stamp = sourceBoard?.updatedAt ?? 0;
+    const recent = boardSettingUndoRef.current.key === key && boardSettingUndoRef.current.at === stamp;
+    if (!recent) {
+      recordUndo(text.undo.boardSetting, sourceBoard);
+    }
+    boardSettingUndoRef.current = { key, at: stamp };
   }
 
   function cancelGeneration({ removePlaceholders = true, resetLoading = true } = {}) {
@@ -353,9 +371,12 @@ function App() {
     try {
       const nextBoard = normalizeBoard(JSON.parse(serializedBoard), language);
       lastSerializedRef.current = serializedBoard;
-      setBoard(nextBoard);
+      setBoard((current) => {
+        if (!current || nextBoard.updatedAt >= current.updatedAt) return nextBoard;
+        return mergeBoards(current, nextBoard, language);
+      });
       clearUndoStack();
-      setNotice({ tone: 'info', text: text.notices.sync });
+      setNotice({ tone: 'info', text: board && nextBoard.updatedAt < board.updatedAt ? text.notices.syncMerged : text.notices.sync });
     } catch {
       setNotice({ tone: 'error', text: text.notices.syncInvalid });
     }
@@ -407,6 +428,26 @@ function App() {
       setAiStatusLoading(false);
     }
   }, []);
+
+  function notifyStorageFailure() {
+    setNotice({ tone: 'error', text: text.notices.saveFailed });
+  }
+
+  function persistBoardOrNotify(projectId, serialized) {
+    if (!persistBoardById(projectId, serialized)) {
+      notifyStorageFailure();
+      return false;
+    }
+    return true;
+  }
+
+  function persistProjectsOrNotify(nextProjects) {
+    if (!persistProjects(nextProjects)) {
+      notifyStorageFailure();
+      return false;
+    }
+    return true;
+  }
 
   useEffect(() => {
     activeProjectIdRef.current = activeProjectId;
@@ -483,7 +524,9 @@ function App() {
     const serialized = JSON.stringify(board);
     if (serialized === lastSerializedRef.current) return;
     lastSerializedRef.current = serialized;
-    persistBoardById(activeProjectId, serialized);
+    if (!persistBoardById(activeProjectId, serialized)) {
+      window.setTimeout(() => setNotice({ tone: 'error', text: text.notices.saveFailed }), 0);
+    }
     const noteCount = board.notes.filter((n) => !n.archived).length;
     const topTagVal = computeTopTag(board.notes);
     setProjects((prev) => {
@@ -492,10 +535,12 @@ function App() {
           ? { ...project, title: board.title, updatedAt: board.updatedAt, noteCount, topTag: topTagVal }
           : project
       );
-      persistProjects(updated);
+      if (!persistProjects(updated)) {
+        window.setTimeout(() => setNotice({ tone: 'error', text: text.notices.saveFailed }), 0);
+      }
       return updated;
     });
-  }, [board, activeProjectId]);
+  }, [board, activeProjectId, text.notices.saveFailed]);
 
   useEffect(() => {
     if (!activeProjectId || typeof window === 'undefined') return undefined;
@@ -547,7 +592,7 @@ function App() {
     setActiveProjectId(projectId);
     setFilters({ scope: 'active', tag: 'all', sort: 'recent', search: '' });
     setComposer({ text: '', tag: locale.tagSuggestions[0] });
-    setAiPromptDraft({ text: '', tag: locale.tagSuggestions[0] });
+    setAiPromptDraft(createDefaultAiPromptDraft(language));
     clearUndoStack();
   }
 
@@ -569,8 +614,8 @@ function App() {
     };
     const updatedProjects = [newProject, ...projects];
     setProjects(updatedProjects);
-    persistProjects(updatedProjects);
-    persistBoardById(projectId, JSON.stringify(newBoard));
+    persistProjectsOrNotify(updatedProjects);
+    persistBoardOrNotify(projectId, JSON.stringify(newBoard));
     clearUndoStack();
     handleEnterProject(projectId);
   }
@@ -581,8 +626,8 @@ function App() {
     }
     const updated = projects.filter((project) => project.id !== projectId);
     setProjects(updated);
-    persistProjects(updated);
-    removeBoardById(projectId);
+    persistProjectsOrNotify(updated);
+    if (!removeBoardById(projectId)) notifyStorageFailure();
     if (activeProjectId === projectId) {
       activeProjectIdRef.current = null;
       canvasInitialScrollRef.current = null;
@@ -605,10 +650,17 @@ function App() {
   function handleLanguageChange(nextLanguage) {
     const normalized = normalizeLanguage(nextLanguage);
     if (normalized === language) return;
-    persistLanguage(normalized);
+    if (!persistLanguage(normalized)) notifyStorageFailure();
     setLanguage(normalized);
     setComposer((current) => ({ ...current, tag: remapSuggestedTag(current.tag, language, normalized) }));
-    setAiPromptDraft((current) => ({ ...current, tag: remapSuggestedTag(current.tag, language, normalized) }));
+    setAiPromptDraft((current) => {
+      const nextLocale = getLocale(normalized);
+      const nextPromptCard = findPromptCard(nextLocale, current.lensId);
+      return {
+        ...current,
+        tag: remapSuggestedTag(current.tag, language, normalized) || nextPromptCard?.tag || nextLocale.tagSuggestions[0],
+      };
+    });
     if (board) {
       setBoard((current) => {
         const cd = locale.defaults;
@@ -635,13 +687,17 @@ function App() {
     syncAiStatus(aiSettings);
   }
 
+  const handleCloseAiSettings = useCallback(() => {
+    setSettingsOpen(false);
+  }, []);
+
   function handleSaveAiSettings() {
     const nextSettings = normalizeAiSettings(aiSettingsDraft);
-    persistAiSettings(nextSettings);
+    const saved = persistAiSettings(nextSettings);
     setAiSettings(nextSettings);
     setAiSettingsDraft(nextSettings);
     setSettingsOpen(false);
-    setNotice({ tone: 'success', text: text.notices.aiSettingsSaved });
+    setNotice({ tone: saved ? 'success' : 'error', text: saved ? text.notices.aiSettingsSaved : text.notices.saveFailed });
   }
 
   function handleRefreshAiStatus(settingsOverride = aiSettingsDraft) {
@@ -1015,6 +1071,7 @@ function App() {
       fallbackAuthor: locale.defaults.owner,
       position: getCanvasInsertionPosition(board),
     });
+    recordUndo(text.undo.add, board);
     setBoard((current) => appendNotes(current, [note]));
     setComposer((current) => ({ ...current, text: '' }));
     setNotice({ tone: 'success', text: text.notices.added });
@@ -1024,15 +1081,19 @@ function App() {
     const currentBoard = board;
     const requestProjectId = activeProjectId;
     if (!currentBoard || !requestProjectId) return;
+    const promptCard = selectedPromptCard ?? findPromptCard(locale, aiPromptDraft.lensId);
     const customPrompt = aiPromptDraft.text.trim();
-    const customTag = aiPromptDraft.tag.trim() || locale.tagSuggestions[0];
-    if (!customPrompt) {
+    const effectivePrompt = customPrompt || promptCard?.prompt || '';
+    const promptTitle = promptCard?.title ?? text.aiPanel.customPromptTitle;
+    const customTag = aiPromptDraft.tag.trim() || promptCard?.tag || locale.tagSuggestions[0];
+    if (!effectivePrompt) {
       setNotice({ tone: 'info', text: text.notices.aiPromptRequired });
       setSidebarTab('ai');
       return;
     }
 
     cancelGeneration({ resetLoading: false });
+    recordUndo(text.undo.generate, currentBoard);
     const token = Symbol('ai-generation');
     const controller = new AbortController();
     const currentAiDivergence = currentBoard.aiDivergence ?? DEFAULT_AI_DIVERGENCE;
@@ -1075,9 +1136,9 @@ function App() {
         language: aiLanguage,
         topic: currentBoard.title,
         prompt: {
-          id: 'custom',
-          title: text.aiPanel.customPromptTitle,
-          prompt: customPrompt,
+          id: promptCard?.id ?? 'custom',
+          title: customPrompt ? `${promptTitle} + ${text.aiPanel.customPromptTitle}` : promptTitle,
+          prompt: effectivePrompt,
           tag: customTag,
         },
         aiDivergence: currentAiDivergence,
@@ -1186,15 +1247,17 @@ function App() {
 
   function handlePinPrompt() {
     if (!board) return;
+    const promptCard = selectedPromptCard ?? findPromptCard(locale, aiPromptDraft.lensId);
     const customPrompt = aiPromptDraft.text.trim();
-    const customTag = aiPromptDraft.tag.trim() || locale.tagSuggestions[0];
-    if (!customPrompt) {
+    const effectivePrompt = customPrompt || promptCard?.prompt || '';
+    const customTag = aiPromptDraft.tag.trim() || promptCard?.tag || locale.tagSuggestions[0];
+    if (!effectivePrompt) {
       setNotice({ tone: 'info', text: text.notices.aiPromptRequired });
       setSidebarTab('ai');
       return;
     }
     const note = createNote({
-      text: customPrompt,
+      text: effectivePrompt,
       tag: customTag,
       author: text.authors.promptHost,
       pinned: true,
@@ -1202,23 +1265,34 @@ function App() {
       fallbackAuthor: locale.defaults.owner,
       position: getCanvasInsertionPosition(board),
     });
+    recordUndo(text.undo.prompt, board);
     setBoard((current) => appendNotes(current, [note]));
     setNotice({ tone: 'success', text: text.notices.promptPinned });
   }
 
   function handleVote(noteId, delta = 1) {
+    if (board?.notes.some((note) => note.id === noteId)) {
+      recordUndo(text.undo.vote, board);
+    }
     setBoard((current) => patchNote(current, noteId, (note) => ({ votes: Math.max(0, note.votes + delta) })));
   }
 
   function handleAiWeightChange(noteId, aiWeight) {
+    if (board?.notes.some((note) => note.id === noteId)) {
+      recordUndo(text.undo.weight, board);
+    }
     setBoard((current) => patchNote(current, noteId, () => ({ aiWeight: normalizeAiWeight(aiWeight) })));
   }
 
   function handleNoteColorChange(noteId, color) {
+    if (board?.notes.some((note) => note.id === noteId)) {
+      recordUndo(text.undo.color, board);
+    }
     setBoard((current) => patchNote(current, noteId, () => ({ color: normalizeNoteColor(color) })));
   }
 
   function handleAiDivergenceChange(nextValue) {
+    if (board) recordBoardSettingUndo('aiDivergence', board);
     setBoard((current) => {
       if (!current) return current;
       return touchBoard({ ...current, aiDivergence: normalizeAiDivergence(nextValue) });
@@ -1226,6 +1300,7 @@ function App() {
   }
 
   function handleAiSpecificityChange(nextValue) {
+    if (board) recordBoardSettingUndo('aiSpecificity', board);
     setBoard((current) => {
       if (!current) return current;
       return touchBoard({ ...current, aiSpecificity: normalizeAiSpecificity(nextValue) });
@@ -1233,6 +1308,7 @@ function App() {
   }
 
   function handleNoteFontScaleChange(nextValue) {
+    if (board) recordBoardSettingUndo('noteFontScale', board);
     setBoard((current) => {
       if (!current) return current;
       return touchBoard({ ...current, noteFontScale: normalizeNoteFontScale(nextValue) });
@@ -1253,10 +1329,18 @@ function App() {
   }
 
   function handlePinToggle(noteId) {
+    const target = board?.notes.find((note) => note.id === noteId);
+    if (target) {
+      recordUndo(target.pinned ? text.undo.unpin : text.undo.pin, board);
+    }
     setBoard((current) => patchNote(current, noteId, (note) => ({ pinned: !note.pinned })));
   }
 
   function handleSaveNote(noteId, updates, options = {}) {
+    const target = board?.notes.find((note) => note.id === noteId);
+    if (target && (target.text !== updates.text || target.tag !== updates.tag)) {
+      recordUndo(text.undo.edit, board);
+    }
     setBoard((current) => patchNote(current, noteId, () => ({ text: updates.text, tag: updates.tag })));
     if (!options.silent) {
       setNotice({ tone: 'success', text: text.notices.saved });
@@ -1313,55 +1397,17 @@ function App() {
       <div className="app-shell__glow app-shell__glow--two" aria-hidden="true" />
       <div className="app-shell__grid" aria-hidden="true" />
 
-      <header className="board-topbar">
-        <button className="board-topbar__back" type="button" onClick={handleBackToHome}>
-          <ArrowLeft size={16} />
-          <span>{text.backToHome}</span>
-        </button>
-        <label className="board-topbar__title-wrap">
-          <span className="sr-only">{text.titleSr}</span>
-          <input
-            className="board-topbar__title"
-            value={board?.title ?? ''}
-            onChange={(e) => handleBoardField('title', e.target.value, locale.defaults.title)}
-          />
-        </label>
-        <div className="board-topbar__controls">
-          <button
-            className="board-topbar__back board-topbar__tool"
-            type="button"
-            onClick={handleUndo}
-            disabled={!canUndo}
-            title={text.undo.button}
-          >
-            <Undo2 size={16} />
-            <span>{text.undo.button}</span>
-          </button>
-          <label className="presence-card">
-            <Users size={15} />
-            <span className="sr-only">{text.hostSr}</span>
-            <input
-              className="presence-card__input"
-              value={board?.owner ?? ''}
-              onChange={(e) => handleBoardField('owner', e.target.value, locale.defaults.owner)}
-            />
-          </label>
-          <div className="language-switch">
-            <span className="language-switch__label">{text.languageLabel}</span>
-            <div className="segmented">
-              {Object.entries(text.languageOptions).map(([key, label]) => (
-                <button key={key} className={language === key ? 'is-active' : ''} type="button" onClick={() => handleLanguageChange(key)}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <span className="autosave-pill">
-            <RefreshCw size={13} />
-            {text.autosaved(formatClock(language, board?.updatedAt))}
-          </span>
-        </div>
-      </header>
+      <BoardTopbar
+        language={language}
+        locale={locale}
+        text={text}
+        board={board}
+        canUndo={canUndo}
+        onBack={handleBackToHome}
+        onBoardField={handleBoardField}
+        onLanguageChange={handleLanguageChange}
+        onUndo={handleUndo}
+      />
 
       {notice ? (
         <div className={`notice notice--${notice.tone}`}>
@@ -1381,207 +1427,41 @@ function App() {
           installedModels={aiAssist.installedModels}
           loading={aiStatusLoading}
           statusMessage={aiStatusMessage}
-          onClose={() => setSettingsOpen(false)}
+          onClose={handleCloseAiSettings}
           onDraftChange={setAiSettingsDraft}
           onRefresh={handleRefreshAiStatus}
           onSave={handleSaveAiSettings}
         />
       ) : null}
 
-      {(() => {
-        const sidebarTabs = [
-          { id: 'capture', label: text.quickPanel.tab },
-          { id: 'ai', label: text.aiPanel.tab },
-        ];
-
-        return (
       <main className="workspace">
-        <aside className="workspace__sidebar">
-          <div className="sidebar-tabs" role="tablist" aria-label={text.sidebarTabsLabel}>
-            {sidebarTabs.map((tab) => (
-              <button
-                key={tab.id}
-                className={`sidebar-tabs__button${sidebarTab === tab.id ? ' sidebar-tabs__button--active' : ''}`}
-                type="button"
-                role="tab"
-                aria-selected={sidebarTab === tab.id}
-                aria-controls={`sidebar-panel-${tab.id}`}
-                id={`sidebar-tab-${tab.id}`}
-                onClick={() => setSidebarTab(tab.id)}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          <section
-            id="sidebar-panel-capture"
-            className={`sidebar-tab-panel panel panel--capture${sidebarTab === 'capture' ? ' sidebar-tab-panel--active' : ''}`}
-            role="tabpanel"
-            aria-labelledby="sidebar-tab-capture"
-            hidden={sidebarTab !== 'capture'}
-          >
-            <div className="panel__eyebrow">
-              <span className="eyebrow">{text.quickPanel.eyebrow}</span>
-              <h3 className="panel__title">{text.quickPanel.title}</h3>
-            </div>
-            <form className="stack" onSubmit={handleAddNote}>
-              <label className="field">
-                <span className="field__label">{text.quickPanel.ideaLabel}</span>
-                <textarea
-                  className="field__control field__control--textarea"
-                  placeholder={text.quickPanel.ideaPlaceholder}
-                  value={composer.text}
-                  onChange={(e) => setComposer((current) => ({ ...current, text: e.target.value }))}
-                />
-              </label>
-              <div className="chip-row">
-                {locale.tagSuggestions.map((tag) => (
-                  <button
-                    key={tag}
-                    className={`chip ${composer.tag === tag ? 'chip--active' : ''}`}
-                    type="button"
-                    onClick={() => setComposer((current) => ({ ...current, tag }))}
-                  >
-                    {tag}
-                  </button>
-                ))}
-              </div>
-              <label className="field">
-                <span className="field__label">{text.quickPanel.tagLabel}</span>
-                <input
-                  className="field__control"
-                  value={composer.tag}
-                  onChange={(e) => setComposer((current) => ({ ...current, tag: e.target.value }))}
-                  placeholder={text.quickPanel.tagPlaceholder}
-                />
-              </label>
-              <button className="button button--accent button--full" type="submit">
-                <Plus size={15} /> {text.quickPanel.submit}
-              </button>
-            </form>
-          </section>
-
-          <section
-            id="sidebar-panel-ai"
-            className={`sidebar-tab-panel panel panel--ai${sidebarTab === 'ai' ? ' sidebar-tab-panel--active' : ''}`}
-            role="tabpanel"
-            aria-labelledby="sidebar-tab-ai"
-            hidden={sidebarTab !== 'ai'}
-          >
-            <div className="panel__eyebrow">
-              <h3 className="panel__title">{text.aiPanel.title}</h3>
-            </div>
-            <div className="ai-panel">
-              <label className="field">
-                <span className="field__label">{text.aiPanel.promptLabel}</span>
-                <textarea
-                  className="field__control field__control--textarea ai-panel__input"
-                  placeholder={text.aiPanel.promptPlaceholder}
-                  value={aiPromptDraft.text}
-                  onChange={(e) => setAiPromptDraft((current) => ({ ...current, text: e.target.value }))}
-                />
-              </label>
-              <label className="field">
-                <span className="field__label">{text.aiPanel.tagLabel}</span>
-                <input
-                  className="field__control"
-                  value={aiPromptDraft.tag}
-                  onChange={(e) => setAiPromptDraft((current) => ({ ...current, tag: e.target.value }))}
-                  placeholder={text.aiPanel.tagPlaceholder}
-                />
-              </label>
-              <div className="prompt-card__status">
-                <span className="prompt-card__status-label">{text.promptStatus.label}</span>
-                <span>{aiStatusMessage}</span>
-              </div>
-              <button className="button button--ghost button--full" type="button" onClick={handleOpenAiSettings}>
-                <Settings size={14} /> {text.aiSettings.button}
-              </button>
-              {aiStreamVisible ? (
-                <div className="ai-stream-panel">
-                  <div className="ai-stream-panel__header">
-                    <span>{text.promptStatus.outputLabel}</span>
-                    <strong>{aiAssist.loading ? text.promptStatus.outputStreaming : text.promptStatus.outputReady}</strong>
-                  </div>
-                  <div className="ai-stream-panel__section">
-                    <span className="ai-stream-panel__label">{text.promptStatus.finalPromptLabel}</span>
-                    <pre className="ai-stream-panel__body ai-stream-panel__body--prompt">
-                      {aiConversationPrompt || text.promptStatus.promptWaiting}
-                    </pre>
-                  </div>
-                  <div className="ai-stream-panel__section">
-                    <span className="ai-stream-panel__label">{text.promptStatus.responseLabel}</span>
-                    <pre className="ai-stream-panel__body">
-                      {aiStreamText || text.promptStatus.outputWaiting}
-                    </pre>
-                  </div>
-                </div>
-              ) : null}
-              <label className="field field--range ai-panel__range">
-                <span className="field__label">{text.promptControls.divergenceLabel}</span>
-                <div className="range-control">
-                  <input
-                    className="range-control__input"
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="1"
-                    value={aiDivergence}
-                    onChange={(e) => handleAiDivergenceChange(Number(e.target.value))}
-                  />
-                  <span className="range-control__value">{aiDivergence}%</span>
-                </div>
-                <div className="range-control__legend">
-                  <span>{text.promptControls.focused}</span>
-                  <span>{text.promptControls.wild}</span>
-                </div>
-              </label>
-              <label className="field field--range ai-panel__range">
-                <span className="field__label">{text.promptControls.specificityLabel}</span>
-                <div className="range-control">
-                  <input
-                    className="range-control__input"
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="1"
-                    value={aiSpecificity}
-                    onChange={(e) => handleAiSpecificityChange(Number(e.target.value))}
-                  />
-                  <span className="range-control__value">{aiSpecificity}%</span>
-                </div>
-                <div className="range-control__legend">
-                  <span>{text.promptControls.broad}</span>
-                  <span>{text.promptControls.concrete}</span>
-                </div>
-              </label>
-              <div className="stack">
-                <button className="button button--secondary button--full" type="button" onClick={handlePinPrompt}>
-                  <Plus size={14} /> {text.promptActions.pin}
-                </button>
-                <button className="button button--ghost button--full" type="button" onClick={() => setAiStreamVisible((visible) => !visible)}>
-                  <MessageSquareText size={14} />
-                  {aiStreamVisible ? text.promptActions.hideOutput : text.promptActions.showOutput}
-                </button>
-                <button
-                  className="button button--accent button--full"
-                  type="button"
-                  onClick={handleGeneratePack}
-                  disabled={aiAssist.loading}
-                >
-                  <WandSparkles size={14} />
-                  {aiAssist.loading ? text.promptActions.generating : text.promptActions.generate(aiGenerationCount)}
-                </button>
-                {aiAssist.loading ? (
-                  <button className="button button--danger button--full" type="button" onClick={handleStopGeneration}>
-                    <Square size={13} /> {text.promptActions.stop}
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          </section>
-        </aside>
+        <BoardSidebar
+          aiAssist={aiAssist}
+          aiConversationPrompt={aiConversationPrompt}
+          aiDivergence={aiDivergence}
+          aiGenerationCount={aiGenerationCount}
+          aiPromptDraft={aiPromptDraft}
+          aiSpecificity={aiSpecificity}
+          aiStatusMessage={aiStatusMessage}
+          aiStreamText={aiStreamText}
+          aiStreamVisible={aiStreamVisible}
+          composer={composer}
+          locale={locale}
+          selectedPromptCard={selectedPromptCard}
+          setAiPromptDraft={setAiPromptDraft}
+          setAiStreamVisible={setAiStreamVisible}
+          setComposer={setComposer}
+          setSidebarTab={setSidebarTab}
+          sidebarTab={sidebarTab}
+          text={text}
+          onAddNote={handleAddNote}
+          onAiDivergenceChange={handleAiDivergenceChange}
+          onAiSpecificityChange={handleAiSpecificityChange}
+          onGeneratePack={handleGeneratePack}
+          onOpenAiSettings={handleOpenAiSettings}
+          onPinPrompt={handlePinPrompt}
+          onStopGeneration={handleStopGeneration}
+        />
 
         <section className="workspace__board" style={{ '--note-font-scale': noteFontScale }}>
           <CollapsibleSection title={`${text.filters.title} · ${text.filters.showing(visibleNotes.length)}`} defaultOpen={false}>
@@ -1764,31 +1644,16 @@ function App() {
           )}
         </section>
       </main>
-        );
-      })()}
 
-      <div className="bottom-panels">
-        <CollapsibleSection title={text.statsTitle} defaultOpen={false}>
-          <div className="stats-grid">
-            <StatCard label={text.stats.activeLabel} value={activeNotes.length} hint={text.stats.activeHint} />
-            <StatCard label={text.stats.archivedLabel} value={archivedNotes.length} hint={text.stats.archivedHint} />
-            <StatCard label={text.stats.topVotesLabel} value={activeNotes.reduce((max, note) => Math.max(max, note.votes), 0)} hint={text.stats.topVotesHint} />
-            <StatCard label={text.stats.topTagLabel} value={topTag} hint={text.stats.topTagHint} />
-          </div>
-        </CollapsibleSection>
-
-        <CollapsibleSection title={text.opsPanel.title} defaultOpen={false}>
-          <div className="stack">
-            <button className="button button--secondary" type="button" onClick={handleExportBoard}>
-              <Download size={15} /> {text.opsPanel.export}
-            </button>
-            <label className="button button--ghost upload-button" htmlFor={importInputId}>
-              <Upload size={15} /> {text.opsPanel.import}
-            </label>
-            <input id={importInputId} className="sr-only" type="file" accept="application/json" onChange={handleImportBoard} />
-          </div>
-        </CollapsibleSection>
-      </div>
+      <BoardBottomPanels
+        activeNotes={activeNotes}
+        archivedNotes={archivedNotes}
+        importInputId={importInputId}
+        text={text}
+        topTag={topTag}
+        onExport={handleExportBoard}
+        onImport={handleImportBoard}
+      />
     </div>
   );
 }
