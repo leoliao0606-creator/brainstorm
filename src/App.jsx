@@ -5,6 +5,7 @@ import {
   useEffect,
   useEffectEvent,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -47,7 +48,6 @@ import {
   patchNote,
   removeNotesById,
   selectAiContextNotes,
-  sortNotes,
   touchBoard,
 } from './lib/boardModel.js';
 import {
@@ -58,7 +58,7 @@ import {
   persistProjects,
   removeBoardById,
 } from './lib/boardStorage.js';
-import { fetchAiStatus, requestIdeaGenerationStream } from './lib/aiClient.js';
+import { fetchAiStatus, requestIdeaGenerationStream, requestQuestionGeneration } from './lib/aiClient.js';
 import {
   loadAiSettings,
   normalizeAiGenerationCount,
@@ -158,6 +158,26 @@ function findPromptCard(locale, lensId) {
   return locale.promptCards.find((card) => card.id === lensId) ?? locale.promptCards[0] ?? null;
 }
 
+function getCanvasFitView(layout, viewport) {
+  const boundsWidth = Math.max(CANVAS_CARD_WIDTH, layout.bounds.maxX - layout.bounds.minX);
+  const boundsHeight = Math.max(CANVAS_CARD_HEIGHT, layout.bounds.maxY - layout.bounds.minY);
+  const availableWidth = Math.max(1, viewport.clientWidth - CANVAS_FIT_PADDING * 2);
+  const availableHeight = Math.max(1, viewport.clientHeight - CANVAS_FIT_PADDING * 2);
+  const zoom = normalizeCanvasZoom(Math.min(availableWidth / boundsWidth, availableHeight / boundsHeight));
+
+  return {
+    zoom,
+    scrollLeft: Math.max(0, (layout.centerX + layout.originX) * zoom - viewport.clientWidth / 2),
+    scrollTop: Math.max(0, (layout.centerY + layout.originY) * zoom - viewport.clientHeight / 2),
+  };
+}
+
+function truncateStatusText(value, maxLength = 72) {
+  const normalized = String(value ?? '').trim().replace(/\s+/g, ' ');
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
 function App() {
   const [language, setLanguage] = useState(loadLanguage);
   const [projects, setProjects] = useState(() => loadProjects(language));
@@ -165,8 +185,11 @@ function App() {
   const [board, setBoard] = useState(null);
   const [composer, setComposer] = useState({ text: '', tag: '' });
   const [aiPromptDraft, setAiPromptDraft] = useState(() => createDefaultAiPromptDraft(language));
+  const [aiQuestionFocus, setAiQuestionFocus] = useState('');
+  const [aiQuestions, setAiQuestions] = useState([]);
+  const [aiQuestionLoading, setAiQuestionLoading] = useState(false);
   const [sidebarTab, setSidebarTab] = useState('capture');
-  const [filters, setFilters] = useState({ scope: 'active', tag: 'all', sort: 'recent', search: '' });
+  const [filters, setFilters] = useState({ scope: 'active', tag: 'all', search: '' });
   const [notice, setNotice] = useState(null);
   const [undoStack, setUndoStack] = useState([]);
   const [aiSettings, setAiSettings] = useState(loadAiSettings);
@@ -175,7 +198,9 @@ function App() {
   const [aiStatusLoading, setAiStatusLoading] = useState(false);
   const [aiStreamVisible, setAiStreamVisible] = useState(false);
   const [aiStreamText, setAiStreamText] = useState('');
+  const [aiProcessText, setAiProcessText] = useState('');
   const [aiConversationPrompt, setAiConversationPrompt] = useState('');
+  const [aiGenerationActive, setAiGenerationActive] = useState(false);
   const [aiAssist, setAiAssist] = useState({
     available: null,
     loading: false,
@@ -189,12 +214,15 @@ function App() {
   const lastSerializedRef = useRef('');
   const revealTimersRef = useRef([]);
   const generationRequestRef = useRef(null);
+  const questionRequestRef = useRef(null);
+  const aiStreamReceivedRef = useRef(false);
   const activeProjectIdRef = useRef(activeProjectId);
   const canvasViewportRef = useRef(null);
   const dragSessionRef = useRef(null);
   const panSessionRef = useRef(null);
   const canvasZoomRef = useRef(CANVAS_ZOOM_DEFAULT);
   const canvasInitialScrollRef = useRef(null);
+  const canvasLayoutRef = useRef(null);
   const spacePressedRef = useRef(false);
   const suppressCanvasContextMenuRef = useRef(false);
   const boardSettingUndoRef = useRef({ key: '', at: 0 });
@@ -225,7 +253,7 @@ function App() {
   const noteFontScale = board?.noteFontScale ?? DEFAULT_NOTE_FONT_SCALE;
   const canUndo = undoStack.length > 0;
 
-  const aiStatusMessage = aiAssist.loading
+  const aiStatusMessage = aiGenerationActive
     ? text.promptActions.generating
     : aiStatusLoading
       ? text.promptStatus.checking
@@ -238,11 +266,26 @@ function App() {
           : aiAssist.reason === 'generation_failed'
             ? text.promptStatus.failed
             : text.promptStatus.checking;
+  const aiQuestionStatusMessage = aiQuestionLoading
+    ? text.aiQuestionsPanel.statusLoading
+    : aiQuestions.length
+      ? text.aiQuestionsPanel.statusReady(aiQuestions.length)
+      : text.aiQuestionsPanel.statusIdle;
 
   function clearRevealTimers() {
     if (typeof window === 'undefined') return;
     revealTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
     revealTimersRef.current = [];
+  }
+
+  function appendAiProcessLine(line) {
+    const nextLine = String(line ?? '').trim();
+    if (!nextLine) return;
+    setAiProcessText((current) => {
+      if (!current) return nextLine;
+      if (current.split('\n').includes(nextLine)) return current;
+      return `${current}\n${nextLine}`;
+    });
   }
 
   function queueReveal(callback, delay = 0) {
@@ -310,26 +353,39 @@ function App() {
     clearRevealTimers();
     if (resetLoading) {
       setAiAssist((current) => ({ ...current, loading: false }));
+      setAiGenerationActive(false);
+    }
+  }
+
+  function cancelQuestionGeneration({ resetLoading = true } = {}) {
+    questionRequestRef.current?.controller.abort();
+    questionRequestRef.current = null;
+    if (resetLoading) {
+      setAiQuestionLoading(false);
     }
   }
 
   function handleStopGeneration() {
-    if (!generationRequestRef.current) return;
+    if (!generationRequestRef.current) {
+      setAiGenerationActive(false);
+      setAiAssist((current) => ({ ...current, loading: false }));
+      return;
+    }
     cancelGeneration();
     setAiStreamText((current) => current ? `${current}\n\n${text.promptStatus.outputStopped}` : text.promptStatus.outputStopped);
+    appendAiProcessLine(text.promptStatus.processFailed);
     setNotice({ tone: 'info', text: text.notices.aiGenerationStopped });
   }
 
   const visibleNotes = useMemo(() => {
     const scopeNotes = filters.scope === 'archived' ? archivedNotes : activeNotes;
     const search = deferredSearch.trim().toLowerCase();
-    const filtered = scopeNotes.filter((note) => {
+    return scopeNotes.filter((note) => {
       if (filters.tag !== 'all' && note.tag !== filters.tag) return false;
       if (!search) return true;
       return `${note.text} ${note.tag} ${note.author}`.toLowerCase().includes(search);
     });
-    return sortNotes(filtered, filters.sort, language);
-  }, [activeNotes, archivedNotes, deferredSearch, filters.scope, filters.sort, filters.tag, language]);
+  }, [activeNotes, archivedNotes, deferredSearch, filters.scope, filters.tag]);
 
   const canvasLayout = useMemo(() => {
     const bounds = visibleNotes.reduce(
@@ -366,6 +422,54 @@ function App() {
     };
   }, [canvasViewportSize.height, canvasViewportSize.width, visibleNotes]);
 
+  useLayoutEffect(() => {
+    const viewport = canvasViewportRef.current;
+    const previous = canvasLayoutRef.current;
+    canvasLayoutRef.current = { projectId: activeProjectId, layout: canvasLayout };
+
+    if (
+      !viewport ||
+      !activeProjectId ||
+      previous?.projectId !== activeProjectId ||
+      canvasInitialScrollRef.current !== activeProjectId
+    ) {
+      return;
+    }
+
+    const originDeltaX = canvasLayout.originX - previous.layout.originX;
+    const originDeltaY = canvasLayout.originY - previous.layout.originY;
+    if (!originDeltaX && !originDeltaY) return;
+
+    const zoom = canvasZoomRef.current;
+    viewport.scrollLeft += originDeltaX * zoom;
+    viewport.scrollTop += originDeltaY * zoom;
+  }, [activeProjectId, canvasLayout]);
+
+  const handleCanvasWheel = useEffectEvent((event) => {
+    const viewport = canvasViewportRef.current;
+    if (!viewport) return;
+
+    event.preventDefault();
+    const deltaUnit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1;
+    const deltaX = event.deltaX * deltaUnit;
+    const deltaY = event.deltaY * deltaUnit;
+    const shouldZoom = event.ctrlKey || event.metaKey || (!event.shiftKey && !isLikelyTrackpadWheel(event, deltaX, deltaY));
+
+    if (shouldZoom) {
+      const zoomDelta = Math.abs(deltaY) >= Math.abs(deltaX) ? deltaY : deltaX;
+      const zoomFactor = Math.exp(-zoomDelta * MOUSE_WHEEL_ZOOM_SENSITIVITY);
+      zoomCanvasTo(canvasZoomRef.current * zoomFactor, event);
+      return;
+    }
+
+    const isTrackpadPan = isLikelyTrackpadWheel(event, deltaX, deltaY);
+    const panSensitivity = isTrackpadPan ? TRACKPAD_PAN_SENSITIVITY : 1;
+    const horizontalDelta = (event.shiftKey && Math.abs(deltaY) > Math.abs(deltaX) ? deltaY : deltaX) * panSensitivity;
+    const verticalDelta = (event.shiftKey && Math.abs(deltaY) > Math.abs(deltaX) ? 0 : deltaY) * panSensitivity;
+    viewport.scrollLeft += horizontalDelta;
+    viewport.scrollTop += verticalDelta;
+  });
+
   const applyIncomingBoard = useEffectEvent((serializedBoard) => {
     if (!serializedBoard || serializedBoard === lastSerializedRef.current) return;
     try {
@@ -398,7 +502,7 @@ function App() {
         setAiAssist((current) => ({
           ...current,
           available: false,
-          loading: false,
+          loading: current.loading,
           model: payload.model ?? runtimeSettings.ollamaModel,
           baseUrl: payload.baseUrl ?? runtimeSettings.ollamaBaseUrl,
           installedModels: payload.installedModels ?? current.installedModels,
@@ -409,7 +513,7 @@ function App() {
       setAiAssist((current) => ({
         ...current,
         available: payload.available,
-        loading: false,
+        loading: current.loading,
         model: payload.model ?? runtimeSettings.ollamaModel,
         baseUrl: payload.baseUrl ?? runtimeSettings.ollamaBaseUrl,
         installedModels: payload.installedModels ?? [],
@@ -419,7 +523,7 @@ function App() {
       setAiAssist((current) => ({
         ...current,
         available: false,
-        loading: false,
+        loading: current.loading,
         model: runtimeSettings.ollamaModel,
         baseUrl: runtimeSettings.ollamaBaseUrl,
         reason: 'connection_failed',
@@ -506,18 +610,29 @@ function App() {
     return () => window.removeEventListener('resize', syncCanvasViewportSize);
   }, [activeProjectId, visibleNotes.length]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const viewport = canvasViewportRef.current;
     if (!activeProjectId || !viewport || !visibleNotes.length) return;
     if (canvasInitialScrollRef.current === activeProjectId) return;
-    canvasInitialScrollRef.current = activeProjectId;
 
-    if (typeof window === 'undefined') return;
-    window.requestAnimationFrame(() => {
-      viewport.scrollLeft = Math.max(0, canvasLayout.originX * canvasZoomRef.current - 36);
-      viewport.scrollTop = Math.max(0, canvasLayout.originY * canvasZoomRef.current - 36);
-    });
-  }, [activeProjectId, canvasLayout.originX, canvasLayout.originY, visibleNotes.length]);
+    const width = viewport.clientWidth;
+    const height = viewport.clientHeight;
+    if (
+      width <= 0 ||
+      height <= 0 ||
+      Math.abs(canvasViewportSize.width - width) > 1 ||
+      Math.abs(canvasViewportSize.height - height) > 1
+    ) {
+      return;
+    }
+
+    const fitView = getCanvasFitView(canvasLayout, viewport);
+    canvasInitialScrollRef.current = activeProjectId;
+    canvasZoomRef.current = fitView.zoom;
+    setCanvasZoom(fitView.zoom);
+    viewport.scrollLeft = fitView.scrollLeft;
+    viewport.scrollTop = fitView.scrollTop;
+  }, [activeProjectId, canvasLayout, canvasViewportSize.height, canvasViewportSize.width, visibleNotes.length]);
 
   useEffect(() => {
     if (!activeProjectId || !board) return;
@@ -566,6 +681,8 @@ function App() {
   useEffect(() => () => {
     generationRequestRef.current?.controller.abort();
     generationRequestRef.current = null;
+    questionRequestRef.current?.controller.abort();
+    questionRequestRef.current = null;
     clearRevealTimers();
   }, []);
 
@@ -584,20 +701,24 @@ function App() {
 
   function handleEnterProject(projectId) {
     cancelGeneration();
+    cancelQuestionGeneration();
     const nextBoard = loadBoardById(projectId, language);
     activeProjectIdRef.current = projectId;
     lastSerializedRef.current = '';
     canvasInitialScrollRef.current = null;
     setBoard(nextBoard);
     setActiveProjectId(projectId);
-    setFilters({ scope: 'active', tag: 'all', sort: 'recent', search: '' });
+    setFilters({ scope: 'active', tag: 'all', search: '' });
     setComposer({ text: '', tag: locale.tagSuggestions[0] });
     setAiPromptDraft(createDefaultAiPromptDraft(language));
+    setAiQuestionFocus('');
+    setAiQuestions([]);
     clearUndoStack();
   }
 
   function handleCreateProject(title) {
     cancelGeneration();
+    cancelQuestionGeneration();
     const projectId = createId();
     const now = Date.now();
     const newProject = { id: projectId, title, updatedAt: now, noteCount: 0, topTag: '' };
@@ -623,6 +744,7 @@ function App() {
   function handleDeleteProject(projectId) {
     if (activeProjectId === projectId) {
       cancelGeneration();
+      cancelQuestionGeneration();
     }
     const updated = projects.filter((project) => project.id !== projectId);
     setProjects(updated);
@@ -633,16 +755,21 @@ function App() {
       canvasInitialScrollRef.current = null;
       setActiveProjectId(null);
       setBoard(null);
+      setAiQuestionFocus('');
+      setAiQuestions([]);
       clearUndoStack();
     }
   }
 
   function handleBackToHome() {
     cancelGeneration();
+    cancelQuestionGeneration();
     activeProjectIdRef.current = null;
     canvasInitialScrollRef.current = null;
     setActiveProjectId(null);
     setBoard(null);
+    setAiQuestionFocus('');
+    setAiQuestions([]);
     lastSerializedRef.current = '';
     clearUndoStack();
   }
@@ -824,55 +951,36 @@ function App() {
     const viewport = canvasViewportRef.current;
     if (!viewport) return;
 
-    const boundsWidth = Math.max(CANVAS_CARD_WIDTH, canvasLayout.bounds.maxX - canvasLayout.bounds.minX);
-    const boundsHeight = Math.max(CANVAS_CARD_HEIGHT, canvasLayout.bounds.maxY - canvasLayout.bounds.minY);
-    const availableWidth = Math.max(1, viewport.clientWidth - CANVAS_FIT_PADDING * 2);
-    const availableHeight = Math.max(1, viewport.clientHeight - CANVAS_FIT_PADDING * 2);
-    const fitZoom = normalizeCanvasZoom(Math.min(availableWidth / boundsWidth, availableHeight / boundsHeight));
-    const centerX = (canvasLayout.centerX + canvasLayout.originX) * fitZoom;
-    const centerY = (canvasLayout.centerY + canvasLayout.originY) * fitZoom;
+    const fitView = getCanvasFitView(canvasLayout, viewport);
 
-    canvasZoomRef.current = fitZoom;
-    setCanvasZoom(fitZoom);
+    canvasZoomRef.current = fitView.zoom;
+    setCanvasZoom(fitView.zoom);
 
     if (typeof window !== 'undefined') {
       window.requestAnimationFrame(() => {
-        viewport.scrollLeft = Math.max(0, centerX - viewport.clientWidth / 2);
-        viewport.scrollTop = Math.max(0, centerY - viewport.clientHeight / 2);
+        viewport.scrollLeft = fitView.scrollLeft;
+        viewport.scrollTop = fitView.scrollTop;
         viewport.focus({ preventScroll: true });
       });
       return;
     }
 
-    viewport.scrollLeft = Math.max(0, centerX - viewport.clientWidth / 2);
-    viewport.scrollTop = Math.max(0, centerY - viewport.clientHeight / 2);
+    viewport.scrollLeft = fitView.scrollLeft;
+    viewport.scrollTop = fitView.scrollTop;
     viewport.focus({ preventScroll: true });
   }
 
-  function handleCanvasWheel(event) {
+  useEffect(() => {
     const viewport = canvasViewportRef.current;
-    if (!viewport) return;
+    if (!viewport) return undefined;
 
-    event.preventDefault();
-    const deltaUnit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1;
-    const deltaX = event.deltaX * deltaUnit;
-    const deltaY = event.deltaY * deltaUnit;
-    const shouldZoom = event.ctrlKey || event.metaKey || (!event.shiftKey && !isLikelyTrackpadWheel(event, deltaX, deltaY));
-
-    if (shouldZoom) {
-      const zoomDelta = Math.abs(deltaY) >= Math.abs(deltaX) ? deltaY : deltaX;
-      const zoomFactor = Math.exp(-zoomDelta * MOUSE_WHEEL_ZOOM_SENSITIVITY);
-      zoomCanvasTo(canvasZoomRef.current * zoomFactor, event);
-      return;
+    function handleNativeWheel(event) {
+      handleCanvasWheel(event);
     }
 
-    const isTrackpadPan = isLikelyTrackpadWheel(event, deltaX, deltaY);
-    const panSensitivity = isTrackpadPan ? TRACKPAD_PAN_SENSITIVITY : 1;
-    const horizontalDelta = (event.shiftKey && Math.abs(deltaY) > Math.abs(deltaX) ? deltaY : deltaX) * panSensitivity;
-    const verticalDelta = (event.shiftKey && Math.abs(deltaY) > Math.abs(deltaX) ? 0 : deltaY) * panSensitivity;
-    viewport.scrollLeft += horizontalDelta;
-    viewport.scrollTop += verticalDelta;
-  }
+    viewport.addEventListener('wheel', handleNativeWheel, { passive: false });
+    return () => viewport.removeEventListener('wheel', handleNativeWheel);
+  }, [activeProjectId, visibleNotes.length]);
 
   function handleCanvasKeyDown(event) {
     const viewport = canvasViewportRef.current;
@@ -1077,6 +1185,27 @@ function App() {
     setNotice({ tone: 'success', text: text.notices.added });
   }
 
+  function getAiBoardContext(currentBoard) {
+    const currentAiDivergence = currentBoard.aiDivergence ?? DEFAULT_AI_DIVERGENCE;
+    const currentAiSpecificity = currentBoard.aiSpecificity ?? DEFAULT_AI_SPECIFICITY;
+    const currentActiveNotes = currentBoard.notes.filter((note) => !note.archived);
+    const currentAiContextNotes = currentAiDivergence >= 100 ? [] : selectAiContextNotes(currentActiveNotes);
+    const activeFingerprints = new Set(
+      currentActiveNotes.map((note) => normalizeNoteFingerprint(note.text)).filter(Boolean)
+    );
+    const dismissedNotes = normalizeDismissedNotes(currentBoard.dismissedNotes).filter(
+      (entry) => !activeFingerprints.has(normalizeNoteFingerprint(entry))
+    );
+
+    return {
+      currentAiDivergence,
+      currentAiSpecificity,
+      currentActiveNotes,
+      currentAiContextNotes,
+      dismissedNotes,
+    };
+  }
+
   async function handleGeneratePack() {
     const currentBoard = board;
     const requestProjectId = activeProjectId;
@@ -1096,16 +1225,26 @@ function App() {
     recordUndo(text.undo.generate, currentBoard);
     const token = Symbol('ai-generation');
     const controller = new AbortController();
-    const currentAiDivergence = currentBoard.aiDivergence ?? DEFAULT_AI_DIVERGENCE;
-    const currentAiSpecificity = currentBoard.aiSpecificity ?? DEFAULT_AI_SPECIFICITY;
-    const currentActiveNotes = currentBoard.notes.filter((note) => !note.archived);
-    const currentAiContextNotes = currentAiDivergence >= 100 ? [] : selectAiContextNotes(currentActiveNotes);
-    const activeFingerprints = new Set(
-      currentActiveNotes.map((note) => normalizeNoteFingerprint(note.text)).filter(Boolean)
-    );
-    const dismissedNotes = normalizeDismissedNotes(currentBoard.dismissedNotes).filter(
-      (entry) => !activeFingerprints.has(normalizeNoteFingerprint(entry))
-    );
+    const {
+      currentAiDivergence,
+      currentAiSpecificity,
+      currentActiveNotes,
+      currentAiContextNotes,
+      dismissedNotes,
+    } = getAiBoardContext(currentBoard);
+    const processLines = [
+      text.promptStatus.processContext(currentBoard.title, currentActiveNotes.length, currentAiContextNotes.length),
+      text.promptStatus.processControls(currentAiDivergence, currentAiSpecificity, aiGenerationCount),
+      dismissedNotes.length
+        ? text.promptStatus.processAvoiding(dismissedNotes.length)
+        : text.promptStatus.processNoDismissed,
+      customPrompt
+        ? text.promptStatus.processPrompt(truncateStatusText(customPrompt))
+        : promptCard?.prompt
+          ? text.promptStatus.processPrompt(truncateStatusText(promptCard.prompt))
+        : text.promptStatus.processDefaultPrompt,
+      text.promptStatus.processSending,
+    ];
     const placeholderPositions = getCanvasInsertionPositions(currentBoard, aiGenerationCount);
     const placeholderNotes = Array.from({ length: aiGenerationCount }, (_, generationIndex) =>
       createNote({
@@ -1124,8 +1263,11 @@ function App() {
 
     setBoard((current) => (current ? appendNotes(current, placeholderNotes) : current));
     setAiAssist((current) => ({ ...current, loading: true, reason: current.available === null ? 'checking' : current.reason }));
+    setAiGenerationActive(true);
     setAiStreamVisible(true);
     setAiStreamText('');
+    aiStreamReceivedRef.current = false;
+    setAiProcessText(processLines.join('\n'));
     setAiConversationPrompt('');
 
     try {
@@ -1155,8 +1297,13 @@ function App() {
           if (!isCurrentGeneration(token, requestProjectId)) return;
           if (event.type === 'meta' && event.finalPrompt) {
             setAiConversationPrompt(event.finalPrompt);
+            appendAiProcessLine(text.promptStatus.processPromptReady);
           }
           if (event.type === 'chunk' && event.content) {
+            if (!aiStreamReceivedRef.current) {
+              aiStreamReceivedRef.current = true;
+              appendAiProcessLine(text.promptStatus.processReceiving);
+            }
             setAiStreamText((current) => `${current}${event.content}`);
           }
         },
@@ -1179,6 +1326,7 @@ function App() {
       const generatedNotes = (payload.ideas || [])
         .filter((idea) => typeof idea === 'string' && idea.trim())
         .slice(0, aiGenerationCount);
+      appendAiProcessLine(text.promptStatus.processParsing(generatedNotes.length));
       if (payload.rawContent) {
         setAiStreamText(payload.rawContent);
       }
@@ -1215,6 +1363,7 @@ function App() {
       queueReveal(() => {
         if (!isCurrentGeneration(token, requestProjectId)) return;
         generationRequestRef.current = null;
+        setAiGenerationActive(false);
         setAiAssist((current) => ({
           ...current,
           available: true,
@@ -1230,6 +1379,8 @@ function App() {
       clearRevealTimers();
       generationRequestRef.current = null;
       setBoard((current) => (current ? removeNotesById(current, placeholderIds) : current));
+      setAiGenerationActive(false);
+      appendAiProcessLine(text.promptStatus.processFailed);
       const message = error instanceof Error ? error.message : text.promptStatus.failed;
       const reason = error?.reason ?? 'generation_failed';
       const model = error?.model ?? fallbackModelName;
@@ -1243,6 +1394,135 @@ function App() {
       }));
       setNotice({ tone: 'error', text: message });
     }
+  }
+
+  async function handleGenerateQuestions() {
+    const currentBoard = board;
+    const requestProjectId = activeProjectId;
+    if (!currentBoard || !requestProjectId) return;
+    const focusPrompt = aiQuestionFocus.trim();
+
+    cancelQuestionGeneration({ resetLoading: false });
+    const token = Symbol('ai-questions');
+    const controller = new AbortController();
+    const {
+      currentAiDivergence,
+      currentAiSpecificity,
+      currentAiContextNotes,
+      dismissedNotes,
+    } = getAiBoardContext(currentBoard);
+    questionRequestRef.current = { token, projectId: requestProjectId, controller };
+
+    setAiQuestionLoading(true);
+    setAiQuestions([]);
+    setAiAssist((current) => ({ ...current, loading: true, reason: current.available === null ? 'checking' : current.reason }));
+
+    try {
+      const { ok, payload } = await requestQuestionGeneration({
+        ollamaBaseUrl: aiSettings.ollamaBaseUrl,
+        ollamaModel: aiSettings.ollamaModel,
+        generationCount: aiGenerationCount,
+        language: aiLanguage,
+        topic: currentBoard.title,
+        prompt: {
+          id: 'reflective-questions',
+          title: text.aiQuestionsPanel.customPromptTitle,
+          prompt: focusPrompt,
+          tag: text.aiQuestionsPanel.questionTag,
+        },
+        aiDivergence: currentAiDivergence,
+        aiSpecificity: currentAiSpecificity,
+        existingNotes: currentAiContextNotes.map((note) => ({
+          text: note.text,
+          tag: note.tag,
+          aiWeight: note.aiWeight,
+        })),
+        dismissedNotes,
+      }, { signal: controller.signal });
+
+      if (
+        questionRequestRef.current?.token !== token ||
+        questionRequestRef.current?.projectId !== requestProjectId ||
+        activeProjectIdRef.current !== requestProjectId
+      ) {
+        return;
+      }
+
+      if (!ok) {
+        const reason = payload.reason ?? 'generation_failed';
+        const message = reason === 'model_missing'
+          ? text.notices.aiModelMissing(payload.model ?? fallbackModelName)
+          : reason === 'connection_failed'
+            ? text.notices.aiConnectionFailed
+            : text.notices.aiRequestFailed(payload.message || text.promptStatus.failed);
+        const err = new Error(message);
+        err.reason = reason;
+        err.model = payload.model ?? fallbackModelName;
+        throw err;
+      }
+
+      const questions = (payload.questions || [])
+        .filter((question) => typeof question === 'string' && question.trim())
+        .slice(0, aiGenerationCount);
+      if (!questions.length) throw new Error(text.notices.aiRequestFailed(text.aiQuestionsPanel.empty));
+
+      const modelName = payload.model ?? fallbackModelName;
+      questionRequestRef.current = null;
+      setAiQuestions(questions);
+      setAiQuestionLoading(false);
+      setAiAssist((current) => ({
+        ...current,
+        available: true,
+        loading: false,
+        model: modelName,
+        baseUrl: payload.baseUrl ?? aiSettings.ollamaBaseUrl,
+        reason: 'ready',
+      }));
+      setNotice({ tone: 'success', text: text.notices.questionsGenerated(modelName, questions.length) });
+    } catch (error) {
+      if (controller.signal.aborted || questionRequestRef.current?.token !== token) return;
+      questionRequestRef.current = null;
+      setAiQuestionLoading(false);
+      const message = error instanceof Error ? error.message : text.promptStatus.failed;
+      const reason = error?.reason ?? 'generation_failed';
+      const model = error?.model ?? fallbackModelName;
+      setAiAssist((current) => ({
+        ...current,
+        available: reason === 'connection_failed' || reason === 'model_missing' ? false : current.available,
+        loading: false,
+        model,
+        baseUrl: aiSettings.ollamaBaseUrl,
+        reason,
+      }));
+      setNotice({ tone: 'error', text: message });
+    }
+  }
+
+  function handleStopQuestionGeneration() {
+    if (!questionRequestRef.current) {
+      setAiQuestionLoading(false);
+      return;
+    }
+    cancelQuestionGeneration();
+    setAiAssist((current) => ({ ...current, loading: false }));
+    setNotice({ tone: 'info', text: text.notices.aiGenerationStopped });
+  }
+
+  function handlePinQuestion(question) {
+    if (!board) return;
+    const cleanQuestion = String(question ?? '').trim();
+    if (!cleanQuestion) return;
+    const note = createNote({
+      text: cleanQuestion,
+      tag: text.aiQuestionsPanel.questionTag,
+      author: text.authors.questionCoach,
+      pinned: true,
+      source: 'prompt',
+      fallbackAuthor: locale.defaults.owner,
+      position: getCanvasInsertionPosition(board),
+    });
+    setBoard((current) => appendNotes(current, [note]));
+    setNotice({ tone: 'success', text: text.notices.questionPinned });
   }
 
   function handlePinPrompt() {
@@ -1436,11 +1716,16 @@ function App() {
 
       <main className="workspace">
         <BoardSidebar
-          aiAssist={aiAssist}
           aiConversationPrompt={aiConversationPrompt}
           aiDivergence={aiDivergence}
+          aiGenerationActive={aiGenerationActive}
           aiGenerationCount={aiGenerationCount}
+          aiProcessText={aiProcessText}
           aiPromptDraft={aiPromptDraft}
+          aiQuestionFocus={aiQuestionFocus}
+          aiQuestionLoading={aiQuestionLoading}
+          aiQuestionStatusMessage={aiQuestionStatusMessage}
+          aiQuestions={aiQuestions}
           aiSpecificity={aiSpecificity}
           aiStatusMessage={aiStatusMessage}
           aiStreamText={aiStreamText}
@@ -1449,6 +1734,7 @@ function App() {
           locale={locale}
           selectedPromptCard={selectedPromptCard}
           setAiPromptDraft={setAiPromptDraft}
+          setAiQuestionFocus={setAiQuestionFocus}
           setAiStreamVisible={setAiStreamVisible}
           setComposer={setComposer}
           setSidebarTab={setSidebarTab}
@@ -1458,9 +1744,12 @@ function App() {
           onAiDivergenceChange={handleAiDivergenceChange}
           onAiSpecificityChange={handleAiSpecificityChange}
           onGeneratePack={handleGeneratePack}
+          onGenerateQuestions={handleGenerateQuestions}
           onOpenAiSettings={handleOpenAiSettings}
           onPinPrompt={handlePinPrompt}
+          onPinQuestion={handlePinQuestion}
           onStopGeneration={handleStopGeneration}
+          onStopQuestionGeneration={handleStopQuestionGeneration}
         />
 
         <section className="workspace__board" style={{ '--note-font-scale': noteFontScale }}>
@@ -1482,18 +1771,6 @@ function App() {
                   value={filters.search}
                   onChange={(e) => setFilters((current) => ({ ...current, search: e.target.value }))}
                 />
-              </label>
-              <label className="field">
-                <span className="field__label">{text.filters.sortLabel}</span>
-                <select
-                  className="field__control"
-                  value={filters.sort}
-                  onChange={(e) => setFilters((current) => ({ ...current, sort: e.target.value }))}
-                >
-                  <option value="recent">{text.filters.sortRecent}</option>
-                  <option value="votes">{text.filters.sortVotes}</option>
-                  <option value="tag">{text.filters.sortTag}</option>
-                </select>
               </label>
               <label className="field field--range">
                 <span className="field__label">{text.filters.noteSizeLabel}</span>
@@ -1537,7 +1814,6 @@ function App() {
                 onPointerDown={handleCanvasPointerDown}
                 onPointerMove={handleCanvasPointerMove}
                 onPointerUp={endCanvasPan}
-                onWheel={handleCanvasWheel}
               >
                 <div
                   className="note-canvas-scaler"

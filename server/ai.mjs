@@ -229,6 +229,67 @@ export function buildMessages({
   ];
 }
 
+export function buildQuestionMessages({
+  language,
+  topic,
+  prompt,
+  existingNotes = [],
+  dismissedNotes = [],
+  aiDivergence = DEFAULT_AI_DIVERGENCE,
+  aiSpecificity = DEFAULT_AI_SPECIFICITY,
+  generationCount = DEFAULT_AI_GENERATION_COUNT,
+}) {
+  const normalizedLanguage = normalizeLanguage(language);
+  const divergenceLevel = normalizeAiDivergence(aiDivergence);
+  const specificityLevel = normalizeAiSpecificity(aiSpecificity);
+  const questionCount = normalizeAiGenerationCount(generationCount);
+  const effectiveNotes = divergenceLevel >= 100 ? [] : existingNotes;
+  const hasNotes = effectiveNotes.length > 0;
+  const hasDismissedNotes = dismissedNotes.length > 0;
+  const divergenceDirective = buildDivergenceDirective(normalizedLanguage, divergenceLevel);
+  const specificityDirective = buildSpecificityDirective(normalizedLanguage, specificityLevel);
+
+  if (normalizedLanguage === 'en') {
+    const notesList = hasNotes ? effectiveNotes.map(formatNoteEntry).join('\n') : '(none)';
+    const dismissedList = hasDismissedNotes ? dismissedNotes.map(formatNoteEntry).join('\n') : '(none)';
+    const focus = String(prompt?.prompt ?? '').trim() || 'No extra focus.';
+    return [
+      {
+        role: 'system',
+        content:
+          'You are a reflective brainstorming coach. Ask concise, useful questions grounded in the board topic and notes. Do not answer the questions. Do not generate new ideas disguised as questions. Return strict JSON only: {"questions":["..."]}. No markdown.',
+      },
+      {
+        role: 'user',
+        content: `Board title / main topic: ${topic || '(untitled)'}\nExisting notes:\n${notesList}\nRemoved notes to avoid reviving:\n${dismissedList}\nOptional user focus: ${focus}\nDivergence guidance: ${divergenceDirective}\nSpecificity guidance: ${specificityDirective}\n\nGenerate ${questionCount} thought-provoking questions for the user that:\n- treat the board title as the primary topic and the notes as weighted context\n- use the optional focus only as guidance, not as a replacement topic\n- reveal missing constraints, priorities, assumptions, tradeoffs, stakeholders, timing, risks, criteria, or next checks\n- stay in the exact same real-world domain as the board title\n- do not revive concepts from the removed-notes list\n- do not suggest a product, startup, software tool, or student project unless the board explicitly asks for that\n- are clearly different from each other\n- become more concrete as specificity rises\n- depend less on existing notes as divergence rises\n- are one sentence each, under 22 words each\n- end with a question mark\n- do not prefix items with labels like "Question 1:"\n- return valid JSON only with one key named "questions" whose value is an array of ${questionCount} strings`,
+      },
+    ];
+  }
+
+  const notesList = hasNotes ? effectiveNotes.map(formatNoteEntry).join('\n') : '无';
+  const dismissedList = hasDismissedNotes ? dismissedNotes.map(formatNoteEntry).join('\n') : '无';
+  const focus = String(prompt?.prompt ?? '').trim() || '无额外关注点';
+  return [
+    {
+      role: 'system',
+      content:
+        '你是一位启发式头脑风暴教练。请基于工作板主题和已有便签提出简洁、有用的问题。不要回答问题，不要把新想法伪装成问题。只返回严格 JSON：{"questions":["..."]}。不要 markdown。',
+    },
+    {
+      role: 'user',
+      content: `工作板标题 / 主题：${topic || '未命名主题'}\n便签墙上已有的想法：\n${notesList}\n已删除、不能再捡回来的想法：\n${dismissedList}\n用户额外关注点：${focus}\n发散引导：${divergenceDirective}\n具体程度引导：${specificityDirective}\n\n请生成 ${questionCount} 个给用户思考的启发性问题，要求：\n- 必须把工作板标题当作主主题，便签是有权重的补充上下文\n- 用户额外关注点只是引导，不能替换主题\n- 帮用户发现缺失限制、优先级、假设、取舍、相关人、时间点、风险、判断标准或下一步验证\n- 必须留在标题指向的现实领域内\n- 不要捡回已删除列表里的概念\n- 除非工作板明确要求，否则不要引向产品、创业、软件工具或学生项目\n- 问题之间要明显不同\n- 具体程度越高，问题越要带具体对象、条件或检查点\n- 发散程度越高，越少依赖已有便签\n- 每个问题一句话，15-42 个汉字\n- 必须以问号结尾\n- 不要在内容前加“问题1：”这类编号前缀\n- 只返回合法 JSON，唯一键名为 "questions"，值为 ${questionCount} 个字符串组成的数组`,
+    },
+  ];
+}
+
+function sanitizeQuestionText(value) {
+  return String(value ?? '')
+    .replace(/^\s*(问题|提问|追问)\s*\d+\s*[:：.)、-]?\s*/i, '')
+    .replace(/^\s*question\s*\d+\s*[:：.)、-]?\s*/i, '')
+    .replace(/^\s*[-*•\d.)]+\s*/, '')
+    .trim();
+}
+
 function sanitizeIdeaText(value) {
   return String(value ?? '')
     .replace(/^\s*(想法|点子|建议)\s*\d+\s*[:：.)、-]?\s*/i, '')
@@ -296,6 +357,53 @@ export function parseIdeaPayload(content, { generationCount = DEFAULT_AI_GENERAT
   }
 
   return uniqueIdeas.slice(0, ideaCount);
+}
+
+export function parseQuestionPayload(content, { generationCount = DEFAULT_AI_GENERATION_COUNT } = {}) {
+  const questionCount = normalizeAiGenerationCount(generationCount);
+  const cleaned = String(content ?? '').replace(/```json|```/gi, '').trim();
+  let parsed;
+
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    const match = cleaned.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+    if (match) {
+      try {
+        parsed = JSON.parse(match[1]);
+      } catch {
+        parsed = undefined;
+      }
+    }
+  }
+
+  let candidates = [];
+  if (Array.isArray(parsed)) {
+    candidates = parsed;
+  } else if (Array.isArray(parsed?.questions)) {
+    candidates = parsed.questions;
+  } else if (Array.isArray(parsed?.items)) {
+    candidates = parsed.items;
+  } else if (Array.isArray(parsed?.ideas)) {
+    candidates = parsed.ideas;
+  } else if (cleaned) {
+    candidates = cleaned.split(/\n+/);
+  }
+
+  const uniqueQuestions = [];
+  for (const candidate of candidates) {
+    for (const expandedCandidate of expandIdeaCandidate(candidate)) {
+      const normalized = sanitizeQuestionText(expandedCandidate);
+      if (!normalized || uniqueQuestions.includes(normalized)) continue;
+      uniqueQuestions.push(normalized);
+    }
+  }
+
+  if (uniqueQuestions.length < Math.min(3, questionCount)) {
+    throw new Error('The model response did not contain enough usable questions.');
+  }
+
+  return uniqueQuestions.slice(0, questionCount);
 }
 
 export function normalizeIdeaGenerationPayload(payload) {
@@ -404,6 +512,41 @@ export function buildOllamaChatPayload({
   };
 }
 
+export function buildOllamaQuestionPayload({
+  ollamaModel,
+  language,
+  topic,
+  prompt,
+  existingNotes = [],
+  dismissedNotes = [],
+  aiDivergence = DEFAULT_AI_DIVERGENCE,
+  aiSpecificity = DEFAULT_AI_SPECIFICITY,
+  generationCount = DEFAULT_AI_GENERATION_COUNT,
+}) {
+  const divergenceLevel = normalizeAiDivergence(aiDivergence);
+  const questionCount = normalizeAiGenerationCount(generationCount);
+  const hasNotes = divergenceLevel < 100 && existingNotes.length > 0;
+
+  return {
+    model: ollamaModel,
+    stream: false,
+    format: 'json',
+    options: {
+      temperature: computeTemperature(hasNotes, divergenceLevel),
+    },
+    messages: buildQuestionMessages({
+      language,
+      topic,
+      prompt,
+      existingNotes,
+      dismissedNotes,
+      aiDivergence,
+      aiSpecificity,
+      generationCount: questionCount,
+    }),
+  };
+}
+
 export function formatMessagesForDisplay(messages = []) {
   return messages
     .map((message) => {
@@ -454,4 +597,45 @@ export async function generateIdeas({
 
   const data = await response.json();
   return parseIdeaPayload(data?.message?.content, { generationCount: ideaCount });
+}
+
+export async function generateQuestions({
+  ollamaBaseUrl,
+  ollamaModel,
+  fetchImpl = fetch,
+  language,
+  topic,
+  prompt,
+  existingNotes = [],
+  dismissedNotes = [],
+  aiDivergence = DEFAULT_AI_DIVERGENCE,
+  aiSpecificity = DEFAULT_AI_SPECIFICITY,
+  generationCount = DEFAULT_AI_GENERATION_COUNT,
+}) {
+  const questionCount = normalizeAiGenerationCount(generationCount);
+  const response = await fetchImpl(`${ollamaBaseUrl}/api/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(buildOllamaQuestionPayload({
+      ollamaModel,
+      language,
+      topic,
+      prompt,
+      existingNotes,
+      dismissedNotes,
+      aiDivergence,
+      aiSpecificity,
+      generationCount: questionCount,
+    })),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `Ollama responded with ${response.status}.`);
+  }
+
+  const data = await response.json();
+  return parseQuestionPayload(data?.message?.content, { generationCount: questionCount });
 }

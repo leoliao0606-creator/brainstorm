@@ -3,8 +3,11 @@ import {
   buildLensInstruction,
   buildMessages,
   buildOllamaChatPayload,
+  buildOllamaQuestionPayload,
+  buildQuestionMessages,
   normalizeIdeaGenerationPayload,
   parseIdeaPayload,
+  parseQuestionPayload,
 } from './ai.mjs';
 
 describe('server ai helpers', () => {
@@ -64,6 +67,36 @@ describe('server ai helpers', () => {
     expect(payload.messages[1].content).toContain('Generate 2');
   });
 
+  it('builds reflective question prompts from the same board context', () => {
+    const messages = buildQuestionMessages({
+      language: 'en',
+      topic: 'Workshop',
+      prompt: { title: 'Reflect', prompt: 'Focus on stakeholder tradeoffs' },
+      existingNotes: [{ text: 'Invite product leads', tag: 'People', aiWeight: 2 }],
+      generationCount: 3,
+    });
+
+    expect(messages[0].content).toContain('questions');
+    expect(messages[1].content).toContain('Generate 3');
+    expect(messages[1].content).toContain('stakeholder tradeoffs');
+    expect(messages[1].content).toContain('Invite product leads');
+  });
+
+  it('builds Ollama payloads for question generation', () => {
+    const payload = buildOllamaQuestionPayload({
+      ollamaModel: 'test-model',
+      language: 'zh',
+      topic: '周末旅行',
+      prompt: { title: '追问', prompt: '关注预算' },
+      generationCount: 4,
+    });
+
+    expect(payload.model).toBe('test-model');
+    expect(payload.stream).toBe(false);
+    expect(payload.format).toBe('json');
+    expect(payload.messages[1].content).toContain('4 个');
+  });
+
   it('parses model JSON, markdown fences, and object candidates', () => {
     const ideas = parseIdeaPayload('```json\n{"ideas":[{"text":"Idea 1: Book tickets"},{"idea":"Idea 2: Compare routes"},"Idea 3: Pack snacks"]}\n```');
 
@@ -86,6 +119,12 @@ describe('server ai helpers', () => {
     const ideas = parseIdeaPayload('{"ideas":["First","Second","Third"]}', { generationCount: 2 });
 
     expect(ideas).toEqual(['First', 'Second']);
+  });
+
+  it('parses question JSON and strips labels', () => {
+    const questions = parseQuestionPayload('{"questions":["Question 1: What is missing?","问题2：谁需要参与？","What should happen next?"]}');
+
+    expect(questions).toEqual(['What is missing?', '谁需要参与？', 'What should happen next?']);
   });
 
   it('normalizes generation payload and removes dismissed active-note duplicates', () => {
@@ -116,5 +155,16 @@ describe('server ai helpers', () => {
 
     expect(normalized.ok).toBe(true);
     expect(normalized.value.generationCount).toBe(10);
+  });
+
+  it('allows an empty custom prompt when the board topic exists', () => {
+    const normalized = normalizeIdeaGenerationPayload({
+      language: 'en',
+      topic: 'Trip',
+      prompt: { id: 'custom', title: 'Custom input', prompt: '' },
+    });
+
+    expect(normalized.ok).toBe(true);
+    expect(normalized.value.prompt.prompt).toBe('');
   });
 });

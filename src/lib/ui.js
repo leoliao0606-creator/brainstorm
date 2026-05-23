@@ -26,6 +26,15 @@ export function tiltForNote(noteId) {
   return ((hashString(noteId) % 9) - 4) * 1.1;
 }
 
+export function visualDepthForNote(note) {
+  const votes = Math.max(0, Number(note?.votes) || 0);
+  const aiWeight = Math.max(0, Math.min(3, Math.round(Number(note?.aiWeight) || 0)));
+  const voteDepth = Math.min(1, Math.log2(votes + 1) / 4);
+  const weightDepth = aiWeight / 3;
+
+  return Math.min(1, voteDepth * 0.52 + weightDepth * 0.48);
+}
+
 const PROJECT_TONES = [
   { gradient: 'linear-gradient(145deg, #fff9e6, #fde68a)', tape: 'rgba(245,158,11,0.35)' },
   { gradient: 'linear-gradient(145deg, #e6fff6, #a7f3d0)', tape: 'rgba(16,185,129,0.30)' },

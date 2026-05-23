@@ -15,7 +15,7 @@ import {
 import { MAX_AI_WEIGHT, NOTE_COLOR_OPTIONS } from '../lib/boardModel.js';
 import { getLocale } from '../lib/locale.js';
 import { formatNoteTime } from '../lib/formatters.js';
-import { autoResizeTextarea, tiltForNote, toneIndexForNote } from '../lib/ui.js';
+import { autoResizeTextarea, tiltForNote, toneIndexForNote, visualDepthForNote } from '../lib/ui.js';
 
 export function NoteCard({
   language,
@@ -41,10 +41,13 @@ export function NoteCard({
   const tone = toneIndexForNote(note);
   const colorClass = note.color ? `note-card--${note.color}` : `note-card--${tone}`;
   const tilt = tiltForNote(note.id);
+  const visualDepth = visualDepthForNote(note);
   const isGenerating = note.generationState === 'generating';
   const noteStyle = {
     '--note-tilt': `${tilt}deg`,
     '--note-enter-delay': `${note.generationIndex * 110}ms`,
+    '--note-depth-overlay': (0.035 + visualDepth * 0.155).toFixed(3),
+    '--note-depth-overlay-soft': (0.018 + visualDepth * 0.09).toFixed(3),
   };
 
   useEffect(() => {

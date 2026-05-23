@@ -1,11 +1,16 @@
 import { MessageSquareText, Plus, Settings, Square, WandSparkles } from 'lucide-react';
 
 export function BoardSidebar({
-  aiAssist,
   aiConversationPrompt,
   aiDivergence,
+  aiGenerationActive,
   aiGenerationCount,
+  aiProcessText,
   aiPromptDraft,
+  aiQuestionFocus,
+  aiQuestionLoading,
+  aiQuestionStatusMessage,
+  aiQuestions,
   aiSpecificity,
   aiStatusMessage,
   aiStreamText,
@@ -14,6 +19,7 @@ export function BoardSidebar({
   locale,
   selectedPromptCard,
   setAiPromptDraft,
+  setAiQuestionFocus,
   setAiStreamVisible,
   setComposer,
   setSidebarTab,
@@ -23,13 +29,17 @@ export function BoardSidebar({
   onAiDivergenceChange,
   onAiSpecificityChange,
   onGeneratePack,
+  onGenerateQuestions,
   onOpenAiSettings,
   onPinPrompt,
+  onPinQuestion,
   onStopGeneration,
+  onStopQuestionGeneration,
 }) {
   const sidebarTabs = [
     { id: 'capture', label: text.quickPanel.tab },
     { id: 'ai', label: text.aiPanel.tab },
+    { id: 'questions', label: text.aiQuestionsPanel.tab },
   ];
 
   return (
@@ -158,12 +168,18 @@ export function BoardSidebar({
             <div className="ai-stream-panel">
               <div className="ai-stream-panel__header">
                 <span>{text.promptStatus.outputLabel}</span>
-                <strong>{aiAssist.loading ? text.promptStatus.outputStreaming : text.promptStatus.outputReady}</strong>
+                <strong>{aiGenerationActive ? text.promptStatus.outputStreaming : text.promptStatus.outputReady}</strong>
               </div>
               <div className="ai-stream-panel__section">
                 <span className="ai-stream-panel__label">{text.promptStatus.finalPromptLabel}</span>
                 <pre className="ai-stream-panel__body ai-stream-panel__body--prompt">
                   {aiConversationPrompt || text.promptStatus.promptWaiting}
+                </pre>
+              </div>
+              <div className="ai-stream-panel__section">
+                <span className="ai-stream-panel__label">{text.promptStatus.processLabel}</span>
+                <pre className="ai-stream-panel__body ai-stream-panel__body--process">
+                  {aiProcessText || text.promptStatus.processWaiting}
                 </pre>
               </div>
               <div className="ai-stream-panel__section">
@@ -224,13 +240,81 @@ export function BoardSidebar({
               className="button button--accent button--full"
               type="button"
               onClick={onGeneratePack}
-              disabled={aiAssist.loading}
+              disabled={aiGenerationActive}
             >
               <WandSparkles size={14} />
-              {aiAssist.loading ? text.promptActions.generating : text.promptActions.generate(aiGenerationCount)}
+              {aiGenerationActive ? text.promptActions.generating : text.promptActions.generate(aiGenerationCount)}
             </button>
-            {aiAssist.loading ? (
+            {aiGenerationActive ? (
               <button className="button button--danger button--full" type="button" onClick={onStopGeneration}>
+                <Square size={13} /> {text.promptActions.stop}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </section>
+
+      <section
+        id="sidebar-panel-questions"
+        className={`sidebar-tab-panel panel panel--questions${sidebarTab === 'questions' ? ' sidebar-tab-panel--active' : ''}`}
+        role="tabpanel"
+        aria-labelledby="sidebar-tab-questions"
+        hidden={sidebarTab !== 'questions'}
+      >
+        <div className="panel__eyebrow">
+          <h3 className="panel__title">{text.aiQuestionsPanel.title}</h3>
+        </div>
+        <div className="ai-questions-panel">
+          <label className="field">
+            <span className="field__label">{text.aiQuestionsPanel.focusLabel}</span>
+            <textarea
+              className="field__control field__control--textarea ai-questions-panel__input"
+              placeholder={text.aiQuestionsPanel.focusPlaceholder}
+              value={aiQuestionFocus}
+              onChange={(event) => setAiQuestionFocus(event.target.value)}
+            />
+          </label>
+          <div className="prompt-card__status">
+            <span className="prompt-card__status-label">{text.promptStatus.label}</span>
+            <span>{aiStatusMessage}</span>
+          </div>
+          <div className="prompt-card__status">
+            <span className="prompt-card__status-label">{text.aiQuestionsPanel.statusLabel}</span>
+            <span>{aiQuestionStatusMessage}</span>
+          </div>
+          <button className="button button--ghost button--full" type="button" onClick={onOpenAiSettings}>
+            <Settings size={14} /> {text.aiSettings.button}
+          </button>
+
+          <div className="question-list" aria-live="polite">
+            {aiQuestions.length ? (
+              aiQuestions.map((question, index) => (
+                <article className="question-card" key={`${question}-${index}`}>
+                  <p>{question}</p>
+                  <button className="question-card__pin" type="button" onClick={() => onPinQuestion(question)}>
+                    <Plus size={13} /> {text.aiQuestionsPanel.pinQuestion}
+                  </button>
+                </article>
+              ))
+            ) : (
+              <p className="question-list__empty">
+                {aiQuestionLoading ? text.aiQuestionsPanel.loading : text.aiQuestionsPanel.empty}
+              </p>
+            )}
+          </div>
+
+          <div className="stack">
+            <button
+              className="button button--accent button--full"
+              type="button"
+              onClick={onGenerateQuestions}
+              disabled={aiQuestionLoading}
+            >
+              <WandSparkles size={14} />
+              {aiQuestionLoading ? text.aiQuestionsPanel.generating : text.aiQuestionsPanel.generate(aiGenerationCount)}
+            </button>
+            {aiQuestionLoading ? (
+              <button className="button button--danger button--full" type="button" onClick={onStopQuestionGeneration}>
                 <Square size={13} /> {text.promptActions.stop}
               </button>
             ) : null}

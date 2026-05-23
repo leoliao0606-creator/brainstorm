@@ -8,6 +8,7 @@ import {
   fetchOllamaStatus,
   formatMessagesForDisplay,
   generateIdeas,
+  generateQuestions,
   normalizeIdeaGenerationPayload,
   parseIdeaPayload,
 } from './server/ai.mjs';
@@ -254,6 +255,82 @@ async function handleIdeaGeneration(request, response) {
     sendJson(response, 200, {
       ok: true,
       ideas,
+      model: runtime.ollamaModel,
+      baseUrl: runtime.ollamaBaseUrl,
+    });
+  } catch (error) {
+    sendJson(response, 503, {
+      ok: false,
+      reason: 'generation_failed',
+      model: runtime.ollamaModel,
+      baseUrl: runtime.ollamaBaseUrl,
+      message: error instanceof Error ? error.message : 'Unknown generation error.',
+    });
+  }
+}
+
+async function handleQuestionGeneration(request, response) {
+  let payload;
+
+  try {
+    payload = await readJsonBody(request);
+  } catch {
+    sendJson(response, 400, {
+      ok: false,
+      reason: 'invalid_json',
+      message: 'Request body must be valid JSON.',
+    });
+    return;
+  }
+
+  const normalized = normalizeIdeaGenerationPayload(payload);
+  if (!normalized.ok) {
+    sendJson(response, normalized.response.statusCode, normalized.response.payload);
+    return;
+  }
+
+  const runtimeResult = normalizeOllamaRuntimeSettings(payload);
+  const runtime = runtimeResult.runtime;
+  if (!runtimeResult.ok) {
+    sendJson(response, 400, {
+      ok: false,
+      available: false,
+      reason: runtimeResult.reason,
+      model: runtime.ollamaModel,
+      baseUrl: runtime.ollamaBaseUrl,
+      message: runtimeResult.message,
+    });
+    return;
+  }
+
+  try {
+    const status = await fetchOllamaStatus({
+      ollamaBaseUrl: runtime.ollamaBaseUrl,
+      ollamaModel: runtime.ollamaModel,
+      fetchImpl: (resource, options) => fetchWithTimeout(resource, options, OLLAMA_STATUS_TIMEOUT_MS),
+    });
+    if (!status.available) {
+      sendJson(response, 503, {
+        ok: false,
+        available: false,
+        reason: 'model_missing',
+        model: runtime.ollamaModel,
+        baseUrl: runtime.ollamaBaseUrl,
+        installedModels: status.installedModels,
+        message: `Model ${runtime.ollamaModel} is not available in Ollama.`,
+      });
+      return;
+    }
+
+    const questions = await generateQuestions({
+      ollamaBaseUrl: runtime.ollamaBaseUrl,
+      ollamaModel: runtime.ollamaModel,
+      fetchImpl: (resource, options) => fetchWithTimeout(resource, options, OLLAMA_GENERATION_TIMEOUT_MS),
+      ...normalized.value,
+    });
+    sendJson(response, 200, {
+      ok: true,
+      questions,
       model: runtime.ollamaModel,
       baseUrl: runtime.ollamaBaseUrl,
     });
@@ -519,6 +596,11 @@ const server = http.createServer(async (request, response) => {
 
   if (url.pathname === '/api/ai/ideas/stream' && request.method === 'POST') {
     await handleIdeaGenerationStream(request, response);
+    return;
+  }
+
+  if (url.pathname === '/api/ai/questions' && request.method === 'POST') {
+    await handleQuestionGeneration(request, response);
     return;
   }
 

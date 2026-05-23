@@ -83,3 +83,14 @@ export async function requestIdeaGenerationStream(payload, { signal, onEvent } =
 
   return { ok: true, payload: finalPayload ?? {} };
 }
+
+export async function requestQuestionGeneration(payload, { signal } = {}) {
+  const response = await fetch('/api/ai/questions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+    body: JSON.stringify(payload),
+  });
+  const responsePayload = await response.json().catch(() => ({}));
+  return { ok: response.ok, payload: responsePayload };
+}

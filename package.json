@@ -4,6 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "quickstart": "node scripts/quickstart.mjs",
+    "setup": "node scripts/quickstart.mjs --setup-only",
     "dev": "node scripts/dev.mjs",
     "dev:client": "vite",
     "dev:server": "node --watch server.mjs",
